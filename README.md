@@ -3,6 +3,44 @@
 给每个用户配一家"随身理财公司"：一支多智能体团队协同处理个人财政与投资问题。
 这是**最小可运行版本**，目的是把编排链路跑通、让"多智能体在协作"这件事肉眼可见。
 
+## 界面速览
+
+![落地页：对话 + 数据工作台](docs/screenshots/01-landing-chat.png)
+
+顶栏精简（品牌 + 数据来源徽章 + 齿轮），左侧对话线程、右侧数据工作台（持仓/负债/风控检查单）。
+
+![多智能体协作过程](docs/screenshots/02-agent-collab.png)
+
+一轮问答里 4 个智能体（supervisor / market / ledger / risk）协同，过程以可折叠 stepper 呈现，默认收起。
+
+![结论摘要 + 操作条](docs/screenshots/03-summary-actions.png)
+
+结论摘要（关键数字 chip）+ 可排序持仓表（红涨绿跌）+ 追问 chips。
+
+![历史区折叠](docs/screenshots/11-history-collapsed.png)
+
+跨会话历史默认折叠为最近 5 条，可展开 / 生成晨报。
+
+![持仓数据表](docs/screenshots/12-positions-table.png)
+
+持仓表可排序、数字右对齐、红涨绿跌，与负债表 / 风控检查单各自独立折叠。
+
+![交付确认（HITL）](docs/screenshots/13-delivery-confirm.png)
+
+L2 建议级在文书成文前走人审闸门（HITL）：粘性操作条"批准 / 扣留"恒在视线内。
+
+![风控检查单](docs/screenshots/14-risk-checklist.png)
+
+风控官（Critic）的确定性规则检查：集中度 / 应急金 / 高息负债 / 储蓄率，有告警则降级为"建议级需人审"。
+
+![报告产物](docs/screenshots/15-report-output.png)
+
+成文交付的报告产物（事实陈述 + 建议分级标注）。
+
+![设置面板](docs/screenshots/16-settings-panel.png)
+
+顶栏齿轮打开的设置面板：账本假设 / 定时晨报 / 行情源三选一 / 数据管理 / 系统信息（只读），保存即写后端、下一轮问答生效。
+
 ## 跑起来
 
 ```bash
@@ -66,6 +104,9 @@ frontend/src/
 data/
   wealth.db       组合/账本/订阅/负债 + runs 运行历史
   checkpoints.db  LangGraph 状态 checkpoint
+docs/
+  screenshots/    界面截图（README 速览引用）
+  
 ```
 
 ## 数据与 API
