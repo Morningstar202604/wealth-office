@@ -1,0 +1,10 @@
+# 后端依赖（MVP）
+# 编排层
+langgraph>=0.6
+langchain-core>=0.3
+# 模型接入（OpenAI 兼容端点）
+langchain-openai>=0.3
+# Web
+fastapi>=0.115
+uvicorn[standard]>=0.32
+python-dotenv>=1.0
