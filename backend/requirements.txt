@@ -10,6 +10,8 @@ uvicorn[standard]>=0.32
 python-dotenv>=1.0
 # 行情源（东方财富批量行情；stdlib urllib 不够稳，httpx 已在 venv）
 httpx>=0.28
+# MCP server（demo_data 7 tool 外置）
+mcp>=2.0
 # 测试 / 静态检查（开发）
 pytest>=8.0
 ruff>=0.8

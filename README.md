@@ -124,12 +124,14 @@ docs/
 | `GET /api/history?thread_id=&limit=` | 运行历史（跨会话持久化，审计链可回放） |
 | `POST /api/ask` | SSE 流式问答（带 `thread_id` 归档本轮） |
 
-行情源可插拔：默认用库内快照价（可复现、零网络）；装了 `yfinance` 且可联网时，
-在 `tools/data_client.py` 把 `SnapshotSource` 换成 `YFinanceSource` 即可，取不到自动降级。
+行情源可插拔（`QuoteSource` 协议）：**快照价 / yfinance / 东方财富 push2** 三选一 + auto 探测
+（顺序 东财 → yfinance → 快照，结果缓存 10min）。网络失败自动降级快照价，绝不拖垮整轮分析。
+设置面板「行情源」即改即生效（白名单校验）。
 
 ## 明确没做的
 
-- **实时行情源**：已留好 `QuoteSource` 插槽与降级路径，接 `yfinance`/`akshare` 是配置不是改造；
-  尚未默认启用（避免限流影响演示可复现性）。
-- **定时晨报 / HITL 确认流**（M2）：checkpoint 已持久化（SQLite），编排层的 interrupt 与 cron 触发未接。
+- **定时晨报 / HITL 确认流**（M2）：已落地 —— `scheduler.py` 按 `report_interval_minutes` 后台生成晨报
+  （`hitl=False` 跳过人审）；交互问答 L2 建议级走 LangGraph `interrupt()`，前端粘性操作条批准/扣留，
+  经 `/api/resume` 续跑归档。
+- **MCP transport 接线**：`app/mcp_server.py` 已可独立 stdio 启动并暴露 7 个 tool（与 `demo_data.__all__` 签名合同测试锁定）；`agents.py` 仍走进程内 `T.*`，尚未切到 MCP client transport。
 - **不做自动执行**（L4）：下单/调仓涉牌照与合规，不在路线图内。
