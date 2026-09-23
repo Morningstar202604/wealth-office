@@ -7,3 +7,11 @@ frontend/dist/
 # 密钥（模型端点凭据）
 backend/.env
 .aqg/
+
+# 运行时数据（含个人持仓/审计链；seed 在代码里重建）
+backend/data/
+# 构建/缓存
+frontend/*.tsbuildinfo
+.pytest_cache/
+.ruff_cache/
+# 注：根目录 *.cjs 验证脚本与 backend/smoke_hitl.py 属项目验证套件，纳入版本控制（全绿验证依赖它们）

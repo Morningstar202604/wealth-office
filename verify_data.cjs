@@ -35,6 +35,41 @@ async function streamAsk(question) {
   let buf = ''
   const events = []
   let final = null
+  let confirm = null
+  let error = null
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    const chunks = buf.split('\n\n')
+    buf = chunks.pop() ?? ''
+    for (const c of chunks) {
+      const line = c.replace(/^data:\s*/, '').trim()
+      if (!line) continue
+      try {
+        const e = JSON.parse(line)
+        if (e.type === 'event') events.push(e)
+        else if (e.type === 'final') final = e
+        else if (e.type === 'confirm_required') confirm = e
+        else if (e.type === 'error') error = e.message
+      } catch {}
+    }
+  }
+  return { events, final, confirm, error }
+}
+
+async function streamResume(ckpt_id, thread_id, approved) {
+  const res = await fetch(BASE + '/api/resume', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ckpt_id, thread_id, approved }),
+  })
+  if (!res.ok) throw new Error(`/api/resume -> HTTP ${res.status}`)
+  const reader = res.body.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  const events = []
+  let final = null
   let error = null
   while (true) {
     const { done, value } = await reader.read()
@@ -80,9 +115,16 @@ function historyCount() {
   ok('读回总市值 == 期望 110,000', mutMV === EXPECT_MV, `actual=${mutMV} (seed时=${seedMV})`)
 
   // 2) 跑一轮组合诊断，断言 agent 用的是新组合
-  const { events, final, error } = await streamAsk('我的组合现在什么情况？')
+  const { events, final, confirm, error } = await streamAsk('我的组合现在什么情况？')
   ok('问答无 error 事件', !error, error || '')
-  ok('产出 final', !!final, final ? `level=${final.level} route=${final.route}` : 'none')
+  // L2 建议级会被 HITL 闸门拦在 confirm_required；此时需 resume 才出 final + 归档。
+  // 本脚本只关心"真实数据源 + 归档"两件事，故无论是否命中闸门，都续跑完成。
+  let finalEvt = final
+  if (!finalEvt && confirm) {
+    const r = await streamResume(confirm.ckpt_id, confirm.thread_id, true)
+    finalEvt = r.final
+  }
+  ok('产出 final', !!finalEvt, finalEvt ? `level=${finalEvt.level} route=${finalEvt.route}` : (confirm ? '确认存在但未续跑' : 'none'))
 
   const marketEvt = events.find((e) => e.agent === 'market' && e.phase === 'done')
   const gotMV = marketEvt?.artifact?.total_market_value

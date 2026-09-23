@@ -43,10 +43,11 @@ async function waitRuns(min, timeoutMs) {
   console.log('   落地页 →', OUT_HISTORY)
 
   // ---- ② 第 1 轮 ----
+  // 完成信号用「历史归档 runs>=1」，而非 DOM 里的"模型调用 N 次"文案：
+  // 后者要等 HITL 闸门续跑（resume）后才出现，180s 死等会超时（脚本写于闸门之前）。
   console.log('② 第 1 轮：点预设')
   await page.click('text=我这个月的钱都花到哪了？')
-  await page.waitForFunction(() => document.body.innerText.includes('模型调用'), null, { timeout: 180000 })
-  let runs = await waitRuns(1, 10000)
+  let runs = await waitRuns(1, 180000)
   console.log('   历史 =', runs.length, '| 第1轮', runs[0] && runs[0].level, '| 派给', runs[0] && runs[0].route)
 
   // ---- ③ 改成一组截然不同的持仓 ----
@@ -78,7 +79,7 @@ async function waitRuns(min, timeoutMs) {
   console.log('   历史 =', runs.length)
   runs.forEach((r) => console.log('   *', r.level, '| 派给', r.route, '|', r.question,
     '| 事件', (r.trace || []).length, '条 |', r.created_at))
-  const turn2 = runs[0] || {}
+  const turn2 = runs.find((r) => r.question === '我的组合现在什么情况？') || runs[0] || {}
   console.log('\n--- 第2轮答案（须反映新组合） ---\n' + (turn2.answer || '(无)').slice(0, 700) + '\n')
 
   await page.screenshot({ path: OUT })
@@ -100,7 +101,7 @@ async function waitRuns(min, timeoutMs) {
     '⑦ 第2轮派给行情分析员（走新组合）': turn2.route === 'market',
     '⑧ 过程事件已入库（审计链）': ((runs[1] || {}).trace || []).length > 0,
     '⑨ 第2轮答案反映新组合数字':
-      ['945', '925', '97.9', '某单一成长股', '单一'].some((k) => a2.includes(k)),
+      ['110,000', '50,000', '83.33', '某单一成长股', '单一'].some((k) => a2.includes(k)),
     '⑩ 第2轮答案与第1轮不同': a1.length > 0 && a1 !== a2,
     '⑪ 无运行时错误': errors.length === 0,
   }
