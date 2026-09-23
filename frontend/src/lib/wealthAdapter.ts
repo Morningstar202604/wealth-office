@@ -58,6 +58,9 @@ export const wealthAdapter: ChatModelAdapter = {
       confirm = p
       store.setPendingConfirm(mid, p)
     }
+    const onError = (message: string) => {
+      answer = `请求失败：${message}`
+    }
     const onFinal = (f: FinalMeta) => {
       answer = f.answer
       meta = f
@@ -70,7 +73,7 @@ export const wealthAdapter: ChatModelAdapter = {
     }
 
     try {
-      await streamAsk(userText, abortSignal, { onEvent, onFinal, onConfirmRequired }, threadId())
+      await streamAsk(userText, abortSignal, { onEvent, onFinal, onConfirmRequired, onError }, threadId())
 
       // HITL：L2 建议级在后端 interrupt 暂停 → 等用户批准/扣留 → 续跑到同一条消息里
       // （闭包内赋值不改 TS 收窄，这里显式断言：streamAsk 返回后 confirm 才可能被置上）
@@ -85,7 +88,7 @@ export const wealthAdapter: ChatModelAdapter = {
           await streamResume(
             { ckpt_id: pending.ckpt_id, thread_id: pending.thread_id, approved: decision.approved },
             abortSignal,
-            { onEvent, onFinal },
+            { onEvent, onFinal, onError },
           )
         } catch {
           abortSignal.removeEventListener('abort', abortPending)

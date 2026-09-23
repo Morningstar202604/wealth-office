@@ -5,7 +5,6 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
-
 from app.tools import data_client
 from app.tools.data_client import EastmoneySource, SnapshotSource
 
@@ -32,26 +31,31 @@ def test_to_secid_unmappable_returns_none(symbol: str) -> None:
     assert EastmoneySource._to_secid(symbol) is None
 
 
-# ---- R2: ulist 响应解析（f2/100 缩放） ----
+# ---- R2: ulist 响应解析（fltt=2 原价，int 不再 /100） ----
 
 
 def _ulist_payload(diff: list[dict]) -> dict:
     return {"data": {"total": len(diff), "diff": diff}}
 
 
-def test_quotes_parses_scaled_integer_prices() -> None:
+def test_quotes_parses_fltt2_prices() -> None:
     payload = _ulist_payload(
         [
-            {"f2": 125380, "f12": "600519", "f14": "贵州茅台"},
-            {"f2": 1171, "f12": "000001", "f14": "平安银行"},
-            {"f2": 4613, "f12": "510300", "f14": "沪深300ETF华泰柏瑞"},
+            {"f2": 1253.8, "f12": "600519", "f14": "贵州茅台"},
+            {"f2": 11.71, "f12": "000001", "f14": "平安银行"},
+            {"f2": 46.13, "f12": "510300", "f14": "沪深300ETF华泰柏瑞"},
         ]
     )
-    resp = type("R", (), {"json": lambda self: payload, "status_code": 200})()
     with patch.object(EastmoneySource, "_get", return_value=payload):
         out = EastmoneySource().quotes(["600519", "000001", "510300"])
-    assert out == {"600519": 1253.80, "000001": 11.71, "510300": 46.13}
-    assert resp is not None
+    assert out == {"600519": 1253.8, "000001": 11.71, "510300": 46.13}
+
+
+def test_quotes_int_price_not_divided_by_100() -> None:
+    payload = _ulist_payload([{"f2": 15, "f12": "600519", "f14": "整数价"}])
+    with patch.object(EastmoneySource, "_get", return_value=payload):
+        out = EastmoneySource().quotes(["600519"])
+    assert out == {"600519": 15.0}
 
 
 def test_quotes_skips_missing_or_dash_price() -> None:

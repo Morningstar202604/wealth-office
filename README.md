@@ -86,9 +86,11 @@ backend/app/
   agents.py           五个节点：supervisor / market / ledger / risk / finalize
   llm.py              模型接入 + 失败降级
   db.py               组合库 + 运行历史（SQLite，首次自动种子示例数据）
+  scheduler.py        定时晨报（interval 改设置后立即唤醒，不空转刷 sleep）
+  mcp_server.py       MCP server（stdio；包装 demo_data 7 个 tool，签名合同测试锁定）
   tools/data_client.py   DataClient 统一数据出口（来源标注 + TTL 缓存 + 东财/yfinance/快照可插拔行情源）
-  tools/demo_data.py     取数工具薄壳（签名即契约，M2 可原样搬进 MCP server）
-  main.py             FastAPI：SSE 流式 + 组合库/历史 API + 静态托管
+  tools/demo_data.py     取数工具薄壳（签名即契约，MCP server 与进程内共用）
+  main.py             FastAPI：SSE 流式 + 组合库/历史/设置 API + 静态托管
 frontend/src/
   App.tsx             装配：assistant-ui 运行时 + 双栏布局 + 窄屏抽屉 + 历史加载
   components/ChatThread.tsx    对话线程：结论摘要 → 正文 → 持仓表 → 过程 stepper → 追问 chips
@@ -98,15 +100,15 @@ frontend/src/
   components/StickyActionBar.tsx HITL 粘性操作条（批准/扣留恒在视线内）
   components/TeamPanel.tsx     数据工作台：持仓表 + 负债表 + 风控检查单（窄屏抽屉复用）
   components/HistorySection.tsx 跨会话历史（后端持久化，刷新/重启后仍在）+ 生成晨报
-  lib/wealthAdapter.ts         后端 SSE → ChatModelAdapter 桥
+  components/SettingsModal.tsx 设置面板（账本假设 / 晨报调度 / 行情源 / 数据管理）
+  lib/wealthAdapter.ts         后端 SSE → ChatModelAdapter 桥（onError / onConfirm 已接线）
   lib/format.ts                金额/百分比格式化 + 红涨绿跌
   数据契约见 lib/types.ts
-data/
+backend/data/        （gitignore；不入库）
   wealth.db       组合/账本/订阅/负债 + runs 运行历史
   checkpoints.db  LangGraph 状态 checkpoint
 docs/
   screenshots/    界面截图（README 速览引用）
-  
 ```
 
 ## 数据与 API
@@ -116,13 +118,19 @@ docs/
 
 | 端点 | 说明 |
 |---|---|
-| `GET /api/portfolio` | 读组合库（持仓/流水/订阅/负债/设置 + 数据来源标注） |
-| `PUT /api/portfolio/positions` | 整体替换持仓（录入你的真实组合） |
+| `GET /api/portfolio` | 读组合（实时行情经 `get_portfolio_async` 跑在线程池，不卡 SSE） |
+| `PUT /api/portfolio/positions` | 整体替换持仓（录入你的真实组合；坏输入回 400） |
 | `POST /api/portfolio/transactions` | 记一笔流水 |
 | `DELETE /api/portfolio/transactions/{id}` | 删一笔流水 |
 | `PUT /api/portfolio/debts` · `POST /api/portfolio/reset` | 改负债 / 恢复示例数据 |
 | `GET /api/history?thread_id=&limit=` | 运行历史（跨会话持久化，审计链可回放） |
-| `POST /api/ask` | SSE 流式问答（带 `thread_id` 归档本轮） |
+| `GET /api/settings` · `PUT /api/settings` | 读/写设置（数值负值与行情源白名单校验，含错误列表） |
+| `POST /api/ask` | SSE 流式问答（带 `thread_id` 归档本轮；错误以 `type=error` 下发） |
+| `POST /api/resume` | HITL 批准/扣留后续跑并归档 |
+| `POST /api/reports/generate` | 手动触发晨报（失败返回可读 error，不裸 500） |
+| `GET /api/reports/status` · `GET /api/health` | 调度状态 / 健康检查 |
+
+默认 CORS 仅放行 `http://127.0.0.1:5199` / `localhost:5199`；调试需全开时设 `CORS_ALLOW_ALL=1`。
 
 行情源可插拔（`QuoteSource` 协议）：**快照价 / yfinance / 东方财富 push2** 三选一 + auto 探测
 （顺序 东财 → yfinance → 快照，结果缓存 10min）。网络失败自动降级快照价，绝不拖垮整轮分析。

@@ -36,6 +36,25 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
     setSaving(true)
     setSaved(null)
     setError(null)
+    const numeric: Array<[string, string]> = [
+      ['monthly_income', '月收入'],
+      ['emergency_target_months', '应急金目标月数'],
+      ['report_interval_minutes', '晨报周期（分钟）'],
+    ]
+    const clientErrors: string[] = []
+    for (const [k, label] of numeric) {
+      const raw = (form[k] ?? '').trim()
+      if (raw === '') continue
+      const n = Number(raw)
+      if (!Number.isFinite(n)) clientErrors.push(`${label}必须是数字`)
+      else if (n < 0) clientErrors.push(`${label}不能为负`)
+      else if (k === 'report_interval_minutes' && n < 1) clientErrors.push('晨报周期至少 1 分钟')
+    }
+    if (clientErrors.length) {
+      setSaving(false)
+      setError(clientErrors.join('；'))
+      return
+    }
     try {
       const r = await fetch('/api/settings', {
         method: 'PUT',

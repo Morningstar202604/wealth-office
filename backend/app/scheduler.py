@@ -18,7 +18,9 @@ from typing import Any
 
 from . import db
 
-REPORT_QUESTION = "生成今日晨报：汇总我的组合现状与账本概况，只描述事实与风险提示，不给操作建议。"
+REPORT_QUESTION = (
+    "生成今日晨报：汇总我的组合现状与账本概况，只描述事实与风险提示，不给操作建议。"
+)
 
 _state: dict[str, Any] = {
     "task": None,
@@ -28,15 +30,24 @@ _state: dict[str, Any] = {
     "last_error": None,
     "generated": 0,
 }
+# 设置面板保存周期后立刻唤醒 loop，不必等当前 sleep 结束
+_wake: asyncio.Event | None = None
 
 
 def _interval_seconds() -> float:
     st = db.get_settings()
     try:
         minutes = float(st.get("report_interval_minutes") or 1440)
-    except Exception:
+    # aqg: top-level boundary
+    except Exception:  # noqa: BLE001 — 读配置失败回退默认日更
         minutes = 1440.0
     return max(60.0, minutes * 60.0)  # 下限 1 分钟，防止把模型打爆
+
+
+def notify_settings_changed() -> None:
+    """PUT /api/settings 保存周期后调用：打断当前 sleep，按新 interval 重排。"""
+    if _wake is not None:
+        _wake.set()
 
 
 async def generate_report() -> dict[str, Any]:
@@ -82,20 +93,34 @@ async def generate_report() -> dict[str, Any]:
 
 
 async def _loop() -> None:
-    while True:
-        interval = _interval_seconds()
-        _state["next_run_at"] = (
-            datetime.now() + timedelta(seconds=interval)
-        ).isoformat(timespec="seconds")
-        await asyncio.sleep(interval)
-        _state["running"] = True
-        try:
-            await generate_report()
-            _state["last_error"] = None
-        except Exception as exc:
-            _state["last_error"] = f"{type(exc).__name__}: {exc}"
-        finally:
-            _state["running"] = False
+    global _wake
+    _wake = asyncio.Event()
+    try:
+        while True:
+            interval = _interval_seconds()
+            _state["next_run_at"] = (
+                datetime.now() + timedelta(seconds=interval)
+            ).isoformat(timespec="seconds")
+            # 短切片 sleep：设置变更通过 notify_settings_changed() 立刻打断
+            remaining = interval
+            _wake.clear()
+            while remaining > 0:
+                slice_s = min(remaining, 5.0)
+                try:
+                    await asyncio.wait_for(_wake.wait(), timeout=slice_s)
+                    break  # 被唤醒：读新 interval 重排 next_run_at
+                except asyncio.TimeoutError:
+                    remaining -= slice_s
+            _state["running"] = True
+            try:
+                await generate_report()
+                _state["last_error"] = None
+            except Exception as exc:  # noqa: BLE001 — 记录晨报失败原因
+                _state["last_error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                _state["running"] = False
+    finally:
+        _wake = None
 
 
 def start() -> None:
@@ -104,17 +129,22 @@ def start() -> None:
 
 
 async def stop() -> None:
+    global _wake
     t = _state["task"]
     if t is None:
         return
     _state["task"] = None
+    if _wake is not None:
+        _wake.set()
     t.cancel()
     try:
         await t
     except asyncio.CancelledError:
         pass
-    except Exception:
+    # aqg: top-level boundary
+    except Exception:  # noqa: BLE001 — 关停路径吞掉非取消异常
         pass
+    _wake = None
 
 
 def status() -> dict[str, Any]:

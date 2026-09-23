@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -22,7 +23,9 @@ from . import db
 from .agents import DISCLAIMER, ROSTER
 from .graph import MAX_STEPS, get_graph, init_graph
 from .llm import get_llm
-from .tools.data_client import DATA
+from .tools.data_client import DATA, get_portfolio_async
+
+log = logging.getLogger(__name__)
 
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent.parent  # wealth-office/
@@ -41,9 +44,16 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="随身理财公司 · MVP", version="0.1.0", lifespan=lifespan)
+# 同域托管时不需要 CORS；仅放开 Vite 开发源（前端 dist 构建后免跨域）。
+_dev_origins = {
+    "http://127.0.0.1:5199",
+    "http://localhost:5199",
+}
+if os.getenv("CORS_ALLOW_ALL") == "1":  # 仅调试用：显式 opt-in 才放开 *
+    _dev_origins = None
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=list(_dev_origins) if _dev_origins is not None else ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -60,6 +70,53 @@ async def asset_cache_headers(request, call_next):
 
 def sse(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
+
+async def _sse_run(first: dict, runner) -> StreamingResponse:
+    """ask/resume 共用 SSE 脚手架。
+
+    `runner(emit, put, trace)`：emit 推事件流并记 trace；put 推 confirm/final/error。
+    断连时 GeneratorExit 只 cancel task，绝不再 yield。
+    """
+
+    async def event_stream():
+        queue: asyncio.Queue = asyncio.Queue()
+        trace_events: list[dict] = []
+
+        async def emit(event: dict) -> None:
+            trace_events.append(event)
+            await queue.put({"type": "event", **event})
+
+        async def run() -> None:
+            try:
+                await runner(emit, queue.put, trace_events)
+            except Exception as exc:  # noqa: BLE001 — 让前端看到真实错误
+                await queue.put(
+                    {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
+                )
+            finally:
+                await queue.put(None)
+
+        task = asyncio.create_task(run())
+        yield sse(first)
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                yield sse(item)
+            yield sse({"type": "done"})
+        finally:
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/health")
@@ -90,14 +147,21 @@ async def roster() -> dict:
 
 @app.get("/api/portfolio")
 async def portfolio() -> dict:
-    DATA.invalidate()
+    # 读路径不 invalidate（TTL 缓存才有效）；持仓价与 agent 同源走 DATA 实时取数
+    pf = await get_portfolio_async()
     return {
-        "positions": db.list_positions(),
+        "positions": pf["positions"],
+        "totals": {
+            "total_market_value": pf["total_market_value"],
+            "total_cost": pf["total_cost"],
+            "total_pnl": pf["total_pnl"],
+            "total_pnl_pct": pf["total_pnl_pct"],
+        },
         "transactions": db.list_transactions(),
         "subscriptions": db.list_subscriptions(),
         "debts": db.list_debts(),
         "settings": db.get_settings(),
-        "source": DATA.source(),
+        "source": pf["source"],
     }
 
 
@@ -106,7 +170,10 @@ async def put_positions(payload: dict) -> dict:
     rows = (payload or {}).get("positions") or []
     if not isinstance(rows, list):
         return JSONResponse({"error": "positions must be a list"}, status_code=400)
-    out = db.replace_positions(rows)
+    try:
+        out = db.replace_positions(rows)
+    except Exception as exc:  # noqa: BLE001 — 坏输入回 400，不 500
+        return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=400)
     DATA.invalidate()
     return out
 
@@ -173,105 +240,71 @@ async def ask(payload: dict):
     if not question:
         return JSONResponse({"error": "question required"}, status_code=400)
 
-    async def event_stream():
-        queue: asyncio.Queue = asyncio.Queue()
-        trace_events: list[dict] = []
+    async def runner(emit, put, trace) -> None:
+        result = await get_graph().ainvoke(
+            {
+                "question": question,
+                "trace": [],
+                "step_count": 0,
+                "llm_calls": 0,
+                "llm_fallbacks": 0,
+            },
+            {
+                "configurable": {
+                    "emit": emit,
+                    "thread_id": ckpt_id,
+                    "hitl": True,
+                },
+                "recursion_limit": MAX_STEPS,
+            },
+        )
+        # 人审闸门：L2 建议级会在 finalize 里 interrupt，图在此暂停等用户决策
+        interrupts = result.get("__interrupt__") or []
+        if interrupts:
+            info = interrupts[0]
+            info = (
+                info.get("value")
+                if isinstance(info, dict)
+                else getattr(info, "value", info)
+            )
+            extra = dict(info) if isinstance(info, dict) else {"preview": str(info)}
+            await put(
+                {
+                    "type": "confirm_required",
+                    "ckpt_id": ckpt_id,
+                    "thread_id": thread_id,
+                    "question": question,
+                    **extra,
+                }
+            )
+            return  # 不落库：等 /api/resume 续跑完成后再归档
+        try:  # 落库失败绝不能打断交付
+            db.save_run(
+                thread_id=thread_id,
+                question=question,
+                answer=result.get("answer", ""),
+                level=result.get("answer_level", ""),
+                route=result.get("route", ""),
+                route_reason=result.get("route_reason", ""),
+                llm_calls=result.get("llm_calls", 0),
+                llm_fallbacks=result.get("llm_fallbacks", 0),
+                trace=trace,
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("save_run failed")
+        await put(
+            {
+                "type": "final",
+                "answer": result.get("answer", ""),
+                "level": result.get("answer_level", ""),
+                "route": result.get("route", ""),
+                "route_reason": result.get("route_reason", ""),
+                "llm_calls": result.get("llm_calls", 0),
+                "llm_fallbacks": result.get("llm_fallbacks", 0),
+            }
+        )
 
-        async def emit(event: dict) -> None:
-            trace_events.append(event)
-            await queue.put({"type": "event", **event})
-
-        async def run() -> None:
-            try:
-                result = await get_graph().ainvoke(
-                    {
-                        "question": question,
-                        "trace": [],
-                        "step_count": 0,
-                        "llm_calls": 0,
-                        "llm_fallbacks": 0,
-                    },
-                    {
-                        "configurable": {
-                            "emit": emit,
-                            "thread_id": ckpt_id,
-                            "hitl": True,
-                        },
-                        "recursion_limit": MAX_STEPS,
-                    },
-                )
-                # 人审闸门：L2 建议级会在 finalize 里 interrupt，图在此暂停等用户决策
-                interrupts = result.get("__interrupt__") or []
-                if interrupts:
-                    info = interrupts[0]
-                    info = (
-                        info.get("value")
-                        if isinstance(info, dict)
-                        else getattr(info, "value", info)
-                    )
-                    payload = (
-                        dict(info) if isinstance(info, dict) else {"preview": str(info)}
-                    )
-                    await queue.put(
-                        {
-                            "type": "confirm_required",
-                            "ckpt_id": ckpt_id,
-                            "thread_id": thread_id,
-                            "question": question,
-                            **payload,
-                        }
-                    )
-                    return  # 不落库：等 /api/resume 续跑完成后再归档
-                try:  # 落库失败绝不能打断交付
-                    db.save_run(
-                        thread_id=thread_id,
-                        question=question,
-                        answer=result.get("answer", ""),
-                        level=result.get("answer_level", ""),
-                        route=result.get("route", ""),
-                        route_reason=result.get("route_reason", ""),
-                        llm_calls=result.get("llm_calls", 0),
-                        llm_fallbacks=result.get("llm_fallbacks", 0),
-                        trace=trace_events,
-                    )
-                except Exception:
-                    pass
-                await queue.put(
-                    {
-                        "type": "final",
-                        "answer": result.get("answer", ""),
-                        "level": result.get("answer_level", ""),
-                        "route": result.get("route", ""),
-                        "route_reason": result.get("route_reason", ""),
-                        "llm_calls": result.get("llm_calls", 0),
-                        "llm_fallbacks": result.get("llm_fallbacks", 0),
-                    }
-                )
-            except Exception as exc:  # 让前端看到真实错误，不静默
-                await queue.put(
-                    {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
-                )
-            finally:
-                await queue.put(None)
-
-        task = asyncio.create_task(run())
-        yield sse({"type": "start", "question": question})
-        try:
-            while True:
-                item = await queue.get()
-                if item is None:
-                    break
-                yield sse(item)
-        finally:
-            if not task.done():
-                task.cancel()
-            yield sse({"type": "done"})
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    return await _sse_run({"type": "start", "question": question}, runner)
 
 
 @app.post("/api/resume")
@@ -283,78 +316,49 @@ async def resume(payload: dict):
     if not ckpt_id:
         return JSONResponse({"error": "ckpt_id required"}, status_code=400)
 
-    async def event_stream():
-        queue: asyncio.Queue = asyncio.Queue()
-        trace_events: list[dict] = []
+    async def runner(emit, put, trace) -> None:
+        from langgraph.types import Command
 
-        async def emit(event: dict) -> None:
-            trace_events.append(event)
-            await queue.put({"type": "event", **event})
+        result = await get_graph().ainvoke(
+            Command(resume={"approved": approved}),
+            {
+                "configurable": {
+                    "emit": emit,
+                    "thread_id": ckpt_id,
+                    "hitl": True,
+                },
+                "recursion_limit": MAX_STEPS,
+            },
+        )
+        try:  # 落库失败绝不能打断交付
+            db.save_run(
+                thread_id=thread_id,
+                question=result.get("question", ""),
+                answer=result.get("answer", ""),
+                level=result.get("answer_level", ""),
+                route=result.get("route", ""),
+                route_reason=result.get("route_reason", ""),
+                llm_calls=result.get("llm_calls", 0),
+                llm_fallbacks=result.get("llm_fallbacks", 0),
+                trace=trace,
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("save_run failed")
+        await put(
+            {
+                "type": "final",
+                "answer": result.get("answer", ""),
+                "level": result.get("answer_level", ""),
+                "route": result.get("route", ""),
+                "route_reason": result.get("route_reason", ""),
+                "llm_calls": result.get("llm_calls", 0),
+                "llm_fallbacks": result.get("llm_fallbacks", 0),
+            }
+        )
 
-        async def run() -> None:
-            try:
-                from langgraph.types import Command
-
-                result = await get_graph().ainvoke(
-                    Command(resume={"approved": approved}),
-                    {
-                        "configurable": {
-                            "emit": emit,
-                            "thread_id": ckpt_id,
-                            "hitl": True,
-                        },
-                        "recursion_limit": MAX_STEPS,
-                    },
-                )
-                try:  # 落库失败绝不能打断交付
-                    db.save_run(
-                        thread_id=thread_id,
-                        question=result.get("question", ""),
-                        answer=result.get("answer", ""),
-                        level=result.get("answer_level", ""),
-                        route=result.get("route", ""),
-                        route_reason=result.get("route_reason", ""),
-                        llm_calls=result.get("llm_calls", 0),
-                        llm_fallbacks=result.get("llm_fallbacks", 0),
-                        trace=trace_events,
-                    )
-                except Exception:
-                    pass
-                await queue.put(
-                    {
-                        "type": "final",
-                        "answer": result.get("answer", ""),
-                        "level": result.get("answer_level", ""),
-                        "route": result.get("route", ""),
-                        "route_reason": result.get("route_reason", ""),
-                        "llm_calls": result.get("llm_calls", 0),
-                        "llm_fallbacks": result.get("llm_fallbacks", 0),
-                    }
-                )
-            except Exception as exc:
-                await queue.put(
-                    {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
-                )
-            finally:
-                await queue.put(None)
-
-        task = asyncio.create_task(run())
-        yield sse({"type": "resume_started", "ckpt_id": ckpt_id, "approved": approved})
-        try:
-            while True:
-                item = await queue.get()
-                if item is None:
-                    break
-                yield sse(item)
-        finally:
-            if not task.done():
-                task.cancel()
-            yield sse({"type": "done"})
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    return await _sse_run(
+        {"type": "resume_started", "ckpt_id": ckpt_id, "approved": approved},
+        runner,
     )
 
 
@@ -367,7 +371,14 @@ async def resume(payload: dict):
 async def generate_report_now() -> dict:
     from . import scheduler
 
-    result = await scheduler.generate_report()
+    try:
+        result = await scheduler.generate_report()
+    except Exception as exc:  # noqa: BLE001 — 手动触发失败要给前端可读错误
+        scheduler._state["last_error"] = f"{type(exc).__name__}: {exc}"
+        return JSONResponse(
+            {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+            status_code=500,
+        )
     return {
         "ok": True,
         "answer": result.get("answer", ""),
@@ -435,7 +446,7 @@ async def put_settings(payload: dict) -> dict:
                 if v < 0:
                     errors.append(f"{key} 不能为负数")
                     continue
-                applied[key] = str(v)
+                applied[key] = str(int(v)) if float(v).is_integer() else str(v)
             else:
                 sval = str(raw).strip()
                 if key == "quote_source_mode" and sval not in QUOTE_MODES:
@@ -448,6 +459,10 @@ async def put_settings(payload: dict) -> dict:
     for k, v in applied.items():
         db.set_setting(k, v)
     DATA.invalidate()
+    if "report_interval_minutes" in applied:
+        from . import scheduler
+
+        scheduler.notify_settings_changed()
     return {
         "ok": True,
         "applied": applied,

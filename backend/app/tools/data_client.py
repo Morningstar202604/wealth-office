@@ -83,17 +83,19 @@ class YFinanceSource:
                     px = float(h["Close"].iloc[-1]) if len(h) else None
                 if px:
                     out[s] = float(px)
-            except Exception:
-                continue  # 单个标的取不到就跳过，绝不让一个限流毁掉整轮分析
+            # aqg: top-level boundary
+            except Exception:  # noqa: BLE001 — 单标的失败跳过
+                continue
         return out
 
 
 class EastmoneySource:
     """实时源：东方财富 push2 批量行情（免 key、毫秒级）。
 
-    secid：6/5 开头 → `1.{code}`（沪），0/3 开头与 159/16 段基金 → `0.{code}`（深）；
-    `CASH`/场外基金无 secid → 跳过。f2 整数价按 /100 还原（接口缩放）。
-    网络失败返回 `{}`，由上层降级快照价，绝不拖垮整轮分析。
+    secid：6/5 开头 → `1.{code}`（沪），0/3 开头与 1[56] 段基金 → `0.{code}`（深）；
+    `CASH`/场外基金无 secid → 跳过。`fltt=2` 时接口返回已是浮点/整数原价
+    （整数 15 就是 15 元，不再 /100）。网络失败返回 `{}`，由上层降级快照价。
+    `ut` 是东财公开请求 token（全网文档共用），非本项目密钥。
     """
 
     name = "东方财富实时价"
@@ -106,11 +108,11 @@ class EastmoneySource:
         s = symbol.strip().upper()
         if s == "CASH" or not re.fullmatch(r"\d{6}", s):
             return None
-        if re.fullmatch(r"[65]\d{5}", s) or s.startswith(("51", "58")):
+        if re.fullmatch(r"[65]\d{5}", s):  # 沪市股票/ETF（51/58 已含）
             return f"1.{s}"
         if re.fullmatch(r"[03]\d{5}", s):
             return f"0.{s}"
-        if re.fullmatch(r"1[56]\d{4}", s):
+        if re.fullmatch(r"1[56]\d{4}", s):  # 15/16 开头基金
             return f"0.{s}"
         return None
 
@@ -121,8 +123,9 @@ class EastmoneySource:
         try:
             if isinstance(raw, bool):
                 return None
+            # fltt=2：接口已返回浮点/整数原价（整数 15 就是 15 元，不是 1500 分）
             if isinstance(raw, int):
-                return raw / 100.0 if raw > 0 else None
+                return float(raw) if raw > 0 else None
             px = float(raw)
             return px if px > 0 else None
         except (TypeError, ValueError):
@@ -204,7 +207,8 @@ def _probe_yfinance() -> bool:
     def _run() -> None:
         try:
             result["ok"] = bool(YFinanceSource().quotes(["600519.SS"]))
-        except Exception:
+        # aqg: top-level boundary
+        except Exception:  # noqa: BLE001 — 探测失败视为源不可用
             result["ok"] = False
 
     t = threading.Thread(target=_run, daemon=True)
@@ -306,11 +310,13 @@ class DataClient:
 
     # ---- 行情 ----
     def _live_quotes(self) -> dict[str, float]:
+        """同步取实时价。网络/探测可能阻塞数秒 —— 事件循环里请用 `asyncio.to_thread`。"""
         pos = db.list_positions()
         symbols = [p["symbol"] for p in pos if p["kind"] != "现金"]
         try:
             got = self._quotes().quotes(symbols)
-        except Exception:
+        # aqg: top-level boundary
+        except Exception:  # noqa: BLE001 — 行情失败降级快照
             got = {}
         if got:
             return got
@@ -398,7 +404,11 @@ class DataClient:
 
     # ---- 账本 ----
     def cashflow_summary(self) -> dict[str, Any]:
-        """本月现金流：收入/支出/结余 + 分类占比。"""
+        """现金流：收入/支出/结余 + 分类占比。
+
+        注意：当前 schema 只有 `day`（MM-DD），无年月 —— 汇总的是**库里全部流水**，
+        单月种子数据下等价于"本月"；跨月追加后需先加 period 过滤再宣称"本月"。
+        """
 
         def build() -> dict[str, Any]:
             txs = db.list_transactions()
@@ -463,7 +473,10 @@ class DataClient:
         return self._cached("debts", build)
 
     def emergency_fund_check(self) -> dict[str, Any]:
-        """应急金覆盖率：现金能撑几个月的必要支出。"""
+        """应急金覆盖率：现金能撑几个月的必要支出。
+
+        注意：与 cashflow 同理，必要支出按**库里全部流水**汇总（单月种子等价本月）。
+        """
 
         def build() -> dict[str, Any]:
             st = db.get_settings()
@@ -499,9 +512,17 @@ class DataClient:
         st = db.get_settings()
         try:
             return float(st.get("monthly_income", 0) or 0)
-        except Exception:
+        # aqg: top-level boundary
+        except Exception:  # noqa: BLE001 — 配置脏值按 0 处理
             return 0.0
 
 
 # 单例：所有调用方共用一份缓存
 DATA = DataClient()
+
+
+async def get_portfolio_async() -> dict[str, Any]:
+    """事件循环安全的持仓取数：阻塞的行情 HTTP 跑在线程池，不卡 SSE。"""
+    import asyncio
+
+    return await asyncio.to_thread(DATA.get_portfolio)
