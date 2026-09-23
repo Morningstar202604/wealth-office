@@ -87,6 +87,7 @@ async def roster() -> dict:
 # 组合库（真实数据源）：读写用户自己的持仓 / 账本 / 负债
 # ---------------------------------------------------------------------------
 
+
 @app.get("/api/portfolio")
 async def portfolio() -> dict:
     DATA.invalidate()
@@ -151,6 +152,7 @@ async def reset_portfolio() -> dict:
 # 运行历史（跨会话持久化 / 审计链）
 # ---------------------------------------------------------------------------
 
+
 @app.get("/api/history")
 async def history(thread_id: str | None = None, limit: int = 50) -> dict:
     return {"runs": db.list_runs(thread_id, limit)}
@@ -159,6 +161,7 @@ async def history(thread_id: str | None = None, limit: int = 50) -> dict:
 # ---------------------------------------------------------------------------
 # 问答：SSE 流式
 # ---------------------------------------------------------------------------
+
 
 @app.post("/api/ask")
 async def ask(payload: dict):
@@ -189,7 +192,11 @@ async def ask(payload: dict):
                         "llm_fallbacks": 0,
                     },
                     {
-                        "configurable": {"emit": emit, "thread_id": ckpt_id, "hitl": True},
+                        "configurable": {
+                            "emit": emit,
+                            "thread_id": ckpt_id,
+                            "hitl": True,
+                        },
                         "recursion_limit": MAX_STEPS,
                     },
                 )
@@ -197,15 +204,23 @@ async def ask(payload: dict):
                 interrupts = result.get("__interrupt__") or []
                 if interrupts:
                     info = interrupts[0]
-                    info = info.get("value") if isinstance(info, dict) else getattr(info, "value", info)
-                    payload = dict(info) if isinstance(info, dict) else {"preview": str(info)}
-                    await queue.put({
-                        "type": "confirm_required",
-                        "ckpt_id": ckpt_id,
-                        "thread_id": thread_id,
-                        "question": question,
-                        **payload,
-                    })
+                    info = (
+                        info.get("value")
+                        if isinstance(info, dict)
+                        else getattr(info, "value", info)
+                    )
+                    payload = (
+                        dict(info) if isinstance(info, dict) else {"preview": str(info)}
+                    )
+                    await queue.put(
+                        {
+                            "type": "confirm_required",
+                            "ckpt_id": ckpt_id,
+                            "thread_id": thread_id,
+                            "question": question,
+                            **payload,
+                        }
+                    )
                     return  # 不落库：等 /api/resume 续跑完成后再归档
                 try:  # 落库失败绝不能打断交付
                     db.save_run(
@@ -221,17 +236,21 @@ async def ask(payload: dict):
                     )
                 except Exception:
                     pass
-                await queue.put({
-                    "type": "final",
-                    "answer": result.get("answer", ""),
-                    "level": result.get("answer_level", ""),
-                    "route": result.get("route", ""),
-                    "route_reason": result.get("route_reason", ""),
-                    "llm_calls": result.get("llm_calls", 0),
-                    "llm_fallbacks": result.get("llm_fallbacks", 0),
-                })
+                await queue.put(
+                    {
+                        "type": "final",
+                        "answer": result.get("answer", ""),
+                        "level": result.get("answer_level", ""),
+                        "route": result.get("route", ""),
+                        "route_reason": result.get("route_reason", ""),
+                        "llm_calls": result.get("llm_calls", 0),
+                        "llm_fallbacks": result.get("llm_fallbacks", 0),
+                    }
+                )
             except Exception as exc:  # 让前端看到真实错误，不静默
-                await queue.put({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
+                await queue.put(
+                    {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
+                )
             finally:
                 await queue.put(None)
 
@@ -279,7 +298,11 @@ async def resume(payload: dict):
                 result = await get_graph().ainvoke(
                     Command(resume={"approved": approved}),
                     {
-                        "configurable": {"emit": emit, "thread_id": ckpt_id, "hitl": True},
+                        "configurable": {
+                            "emit": emit,
+                            "thread_id": ckpt_id,
+                            "hitl": True,
+                        },
                         "recursion_limit": MAX_STEPS,
                     },
                 )
@@ -297,17 +320,21 @@ async def resume(payload: dict):
                     )
                 except Exception:
                     pass
-                await queue.put({
-                    "type": "final",
-                    "answer": result.get("answer", ""),
-                    "level": result.get("answer_level", ""),
-                    "route": result.get("route", ""),
-                    "route_reason": result.get("route_reason", ""),
-                    "llm_calls": result.get("llm_calls", 0),
-                    "llm_fallbacks": result.get("llm_fallbacks", 0),
-                })
+                await queue.put(
+                    {
+                        "type": "final",
+                        "answer": result.get("answer", ""),
+                        "level": result.get("answer_level", ""),
+                        "route": result.get("route", ""),
+                        "route_reason": result.get("route_reason", ""),
+                        "llm_calls": result.get("llm_calls", 0),
+                        "llm_fallbacks": result.get("llm_fallbacks", 0),
+                    }
+                )
             except Exception as exc:
-                await queue.put({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
+                await queue.put(
+                    {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
+                )
             finally:
                 await queue.put(None)
 
@@ -334,6 +361,7 @@ async def resume(payload: dict):
 # ---------------------------------------------------------------------------
 # 定时晨报（M2）：后台调度 + 手动触发 + 查询
 # ---------------------------------------------------------------------------
+
 
 @app.post("/api/reports/generate")
 async def generate_report_now() -> dict:
@@ -371,7 +399,7 @@ SETTING_KEYS = {
     "essential_categories": str,
     "quote_source_mode": str,
 }
-QUOTE_MODES = ("auto", "snapshot", "yfinance")
+QUOTE_MODES = ("auto", "snapshot", "yfinance", "eastmoney")
 
 
 @app.get("/api/settings")
@@ -420,7 +448,12 @@ async def put_settings(payload: dict) -> dict:
     for k, v in applied.items():
         db.set_setting(k, v)
     DATA.invalidate()
-    return {"ok": True, "applied": applied, "errors": errors, "settings": db.get_settings()}
+    return {
+        "ok": True,
+        "applied": applied,
+        "errors": errors,
+        "settings": db.get_settings(),
+    }
 
 
 # 前端构建产物：若已 build 就直接托管（单端口，免跨域）
@@ -435,9 +468,16 @@ if FRONTEND_DIST.is_dir():
 
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="web")
 else:
+
     @app.get("/")
     async def placeholder() -> dict:
         return {
             "message": "前端尚未构建。执行：cd frontend && npm install && npm run build",
-            "api": ["/api/health", "/api/roster", "/api/portfolio", "/api/history", "POST /api/ask"],
+            "api": [
+                "/api/health",
+                "/api/roster",
+                "/api/portfolio",
+                "/api/history",
+                "POST /api/ask",
+            ],
         }

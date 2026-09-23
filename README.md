@@ -86,7 +86,7 @@ backend/app/
   agents.py           五个节点：supervisor / market / ledger / risk / finalize
   llm.py              模型接入 + 失败降级
   db.py               组合库 + 运行历史（SQLite，首次自动种子示例数据）
-  tools/data_client.py   DataClient 统一数据出口（来源标注 + TTL 缓存 + 可插拔行情源）
+  tools/data_client.py   DataClient 统一数据出口（来源标注 + TTL 缓存 + 东财/yfinance/快照可插拔行情源）
   tools/demo_data.py     取数工具薄壳（签名即契约，M2 可原样搬进 MCP server）
   main.py             FastAPI：SSE 流式 + 组合库/历史 API + 静态托管
 frontend/src/

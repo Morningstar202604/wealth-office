@@ -131,7 +131,8 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                 <h3 className="text-xs font-medium text-muted-foreground">行情源</h3>
                 {(
                   [
-                    ['auto', '自动（推荐）', '探测 yfinance 可用性，可用则实时价，否则快照价'],
+                    ['auto', '自动（推荐）', '探测东财/yfinance，可用则实时价，否则快照价'],
+                    ['eastmoney', '东方财富', 'push2 批量实时行情；网络不可用时自动降级快照'],
                     ['snapshot', '快照价', '使用组合库中录入的价格，结果可复现、零网络'],
                     ['yfinance', '实时价', 'Yahoo Finance（当前该网络被限流时单标的自动降级快照）'],
                   ] as const
