@@ -166,7 +166,12 @@ export default function App() {
           {tab === "chat" ? (
             <div className="mx-auto max-w-3xl h-full flex flex-col pb-20 md:pb-0 view-enter">
               {activeThread ? (
-                <ChatView key={activeThread} threadId={activeThread} onNewSession={() => void newSession()} />
+                <ChatView
+                  key={activeThread}
+                  threadId={activeThread}
+                  onNewSession={() => void newSession()}
+                  onSwitch={openChat}
+                />
               ) : (
                 <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
                   正在准备会话…

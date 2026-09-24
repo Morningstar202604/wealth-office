@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  ChevronDown, ChevronUp, Copy, Download, Loader2, Mic, MicOff, Send, Square, Sparkles,
+  ChevronDown, ChevronUp, Copy, Download, Loader2, MessageCircle, Mic, MicOff, Send, Square, Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -12,6 +12,7 @@ import { apiStream } from "@/lib/api";
 import { store } from "@/lib/store";
 import { useToast } from "@/lib/toast";
 import { fmtDate } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import type { AnswerMeta, RunRecord } from "@/lib/types";
 
 interface StepInfo {
@@ -57,14 +58,24 @@ function dynamicSuggestions(flags: RunRecord["flags"]): string[] {
 
 let msgSeq = 1;
 
-export function ChatView({ threadId, onNewSession }: { threadId: string; onNewSession: () => void }) {
-  const { dashboard, bootstrap } = store.useApp();
+export function ChatView({
+  threadId,
+  onNewSession,
+  onSwitch,
+}: {
+  threadId: string;
+  onNewSession: () => void;
+  /** 切换到另一个会话（桌面走侧栏，移动端走顶部下拉） */
+  onSwitch: (threadId: string) => void;
+}) {
+  const { dashboard, bootstrap, sessions } = store.useApp();
   const { toast } = useToast();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [showSteps, setShowSteps] = useState(false);
   const [listening, setListening] = useState(false);
+  const [showSessions, setShowSessions] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const recogRef = useRef<{ stop: () => void } | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -279,9 +290,52 @@ export function ChatView({ threadId, onNewSession }: { threadId: string; onNewSe
 
   return (
     <div className="flex flex-col h-full">
-      {/* 会话头 */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border/60">
-        <span className="text-xs text-muted-foreground">当前会话</span>
+      {/* 会话头：点当前会话可切换（移动端无侧栏，这是唯一入口） */}
+      <div className="relative flex items-center justify-between px-4 py-2 border-b border-border/60">
+        <div className="relative">
+          <button
+            type="button"
+            className="text-xs text-muted-foreground inline-flex items-center gap-1 hover:text-foreground"
+            onClick={() => setShowSessions((v) => !v)}
+          >
+            <MessageCircle className="w-3.5 h-3.5" />
+            当前会话
+            <ChevronDown className={cn("w-3 h-3 transition-transform", showSessions && "rotate-180")} />
+          </button>
+          {showSessions && (
+            <>
+              <div
+                className="fixed inset-0 z-20"
+                onClick={() => setShowSessions(false)}
+                aria-hidden
+              />
+              <div className="absolute left-0 top-full mt-1 z-30 w-64 max-h-72 overflow-y-auto scroll-thin rounded-xl border border-border bg-card shadow-lift p-1.5">
+                {sessions.length === 0 ? (
+                  <div className="px-3 py-3 text-xs text-muted-foreground">还没有会话</div>
+                ) : (
+                  sessions.slice(0, 30).map((s) => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      className={cn(
+                        "w-full text-left truncate rounded-lg px-2.5 py-2 text-sm",
+                        s.thread_id === threadId
+                          ? "bg-accent text-accent-foreground font-medium"
+                          : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                      )}
+                      onClick={() => {
+                        setShowSessions(false);
+                        if (s.thread_id !== threadId) onSwitch(s.thread_id);
+                      }}
+                    >
+                      {s.title}
+                    </button>
+                  ))
+                )}
+              </div>
+            </>
+          )}
+        </div>
         <Button variant="ghost" size="sm" onClick={onNewSession}>
           <Sparkles className="w-3.5 h-3.5" /> 新会话
         </Button>
