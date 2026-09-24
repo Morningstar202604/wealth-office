@@ -48,6 +48,7 @@ export async function apiStream(
   body: unknown,
   onLine: (obj: Record<string, unknown>) => void,
   signal?: AbortSignal,
+  retried = false,
 ): Promise<void> {
   const token = getToken();
   const url = token ? `${path}?token=${encodeURIComponent(token)}` : path;
@@ -57,6 +58,13 @@ export async function apiStream(
     body: JSON.stringify(body),
     signal,
   });
+  if (resp.status === 401 && !retried) {
+    const input = window.prompt("本服务设置了访问口令，请输入：");
+    if (input !== null) {
+      setToken(input.trim());
+      return apiStream(path, body, onLine, signal, true);
+    }
+  }
   if (!resp.ok) {
     let detail = `${resp.status}`;
     try {

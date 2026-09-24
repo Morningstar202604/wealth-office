@@ -30,13 +30,9 @@
     --radius: 0.75rem;
     --card-pad: 1rem;
 
-    /* 角色强调色 */
+    /* 品牌主色（Logo 等视觉元素复用）；品牌切换只改 primary/accent/ring */
     --brand: 174 62% 29%;
-    --brand-blue: 211 90% 42%;
-    --brand-teal: 175 78% 28%;
-    --brand-green: 152 62% 32%;
     --brand-gold: 43 68% 44%;
-    --brand-purple: 268 58% 48%;
   }
 
   .dark {
@@ -63,11 +59,7 @@
     --ring: 174 62% 50%;
 
     --brand: 174 62% 52%;
-    --brand-blue: 211 100% 60%;
-    --brand-teal: 175 70% 45%;
-    --brand-green: 152 58% 48%;
     --brand-gold: 43 78% 56%;
-    --brand-purple: 270 70% 68%;
   }
 
   /* 四套品牌色预设（浅色） */

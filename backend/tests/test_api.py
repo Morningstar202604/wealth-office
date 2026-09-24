@@ -207,3 +207,99 @@ async def test_export_and_trend(client) -> None:
     m = body["months"][-1]
     assert "income" in m and "expense" in m and "net" in m
     assert m["income"] > 0 and m["expense"] > 0
+
+
+# ---------------------------------------------------------------------------
+# 审查修复回归：边界 / 迁移 / 重置 / 鉴权
+# ---------------------------------------------------------------------------
+
+async def test_trend_bad_months(client) -> None:
+    """months=0 / 负数不再触发 SQL LIMIT 0 崩溃，落到最小 1 个月。"""
+    r0 = await client.get("/api/trend?months=0")
+    assert r0.status_code == 200 and len(r0.json()["months"]) >= 1
+    rn = await client.get("/api/trend?months=-5")
+    assert rn.status_code == 200 and len(rn.json()["months"]) >= 1
+    rb = await client.get("/api/trend?months=999")
+    assert rb.status_code == 200 and len(rb.json()["months"]) <= 24
+
+
+async def test_transaction_bad_amount_and_date(client) -> None:
+    """金额非数字 / 日期格式非法返回 400，而不是 500。"""
+    r = await client.post("/api/transactions", json={
+        "date": "2026-09-25", "item": "坏金额", "category": "餐饮", "amount": "abc",
+    })
+    assert r.status_code == 400
+    r = await client.post("/api/transactions", json={
+        "date": "2026/09/25", "item": "坏日期", "category": "餐饮", "amount": -66,
+    })
+    assert r.status_code == 400
+    r = await client.post("/api/transactions", json={
+        "date": "2026-09-25", "item": "零金额", "category": "餐饮", "amount": 0,
+    })
+    assert r.status_code == 400
+    # 合法请求仍成功
+    r = await client.post("/api/transactions", json={
+        "date": "2026-09-25", "item": "正常", "category": "餐饮", "amount": -66,
+    })
+    assert r.status_code == 200
+
+
+async def test_migrate_sessions_from_runs(client) -> None:
+    """旧库：已有 runs 但无 sessions，启动时应迁移出会话，标题取首问。"""
+    # 模拟旧版本库：runs 存在但 sessions 表无对应记录（绕过 save_run 的自动登记）
+    tid = "legacy-thread-1"
+    conn = await db._conn()
+    for q, a in (("第一个问题", "x"), ("第二个问题", "y")):
+        await conn.execute(
+            "INSERT INTO runs(thread_id,question,answer,level,flags_json,created_at)"
+            " VALUES(?,?,?,?,?,?)",
+            (tid, q, a, "L2 建议", "[]", "2026-09-01T08:00:00+08:00"),
+        )
+    await conn.commit()
+    await db._migrate_sessions_from_runs()
+    sess = await db.list_sessions()
+    match = [s for s in sess if s["thread_id"] == tid]
+    assert match and match[0]["title"] == "第一个问题"
+
+
+async def test_reset_to_seed_keeps_data_note(client) -> None:
+    """恢复示例数据后，data_note 仍保持 seed 标记，不应误报用户数据。"""
+    r = await client.post("/api/transactions", json={
+        "date": "2026-09-25", "item": "临时", "category": "餐饮", "amount": -10,
+    })
+    assert r.status_code == 200
+    d = (await client.get("/api/dashboard")).json()
+    assert d["source"]["seeded"] is False
+
+    r = await client.post("/api/portfolio/reset")
+    assert r.status_code == 200
+    d = (await client.get("/api/dashboard")).json()
+    assert d["source"]["seeded"] is True
+    assert d["positions"]  # 种子持仓仍在
+
+
+async def test_deleting_all_positions_does_not_reseed(client, monkeypatch) -> None:
+    """用户清空全部持仓后重启服务，不得重新灌入种子数据。"""
+    for p in await db.list_positions():
+        await db.delete_position(p["symbol"])
+    d = (await client.get("/api/dashboard")).json()
+    assert d["positions"] == []
+
+    # 模拟重启：重新 init_db（settings 表已有数据，不应触发 seed）
+    await db.close_db()
+    await db.init_db()
+    d = (await client.get("/api/dashboard")).json()
+    assert d["positions"] == []
+
+
+async def test_api_token_auth(client, monkeypatch) -> None:
+    """设置 API_TOKEN 后：未带口令 401，带 query token 200。"""
+    monkeypatch.setenv("API_TOKEN", "secret-review")
+    # 首次请求已发生 token 相关初始化，直接验证 401 分支
+    r = await client.get("/api/health")
+    assert r.status_code == 200  # health 不做鉴权
+
+    r = await client.get("/api/dashboard")
+    assert r.status_code == 401
+    r = await client.get("/api/dashboard?token=secret-review")
+    assert r.status_code == 200

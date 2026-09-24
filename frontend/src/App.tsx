@@ -30,7 +30,6 @@ export default function App() {
   useEffect(() => {
     void store.refreshBootstrap();
     void store.refreshDashboard();
-    void store.refreshHistory();
     void store.refreshSessions();
   }, []);
 
@@ -78,14 +77,21 @@ export default function App() {
         await api(`/api/sessions/${id}`, { method: "DELETE" });
         await store.refreshSessions();
         if (activeThread === threadId) {
+          // 正在看被删的会话：落到最近会话或新建，不留空页面
           setActiveThread(null);
+          if (sessions.length <= 1) {
+            void newSession();
+          } else {
+            const next = sessions.find((s) => s.thread_id !== threadId);
+            setActiveThread(next?.thread_id ?? null);
+          }
         }
         toast("会话已删除", "ok");
       } catch (e) {
         toast(e instanceof Error ? e.message : String(e), "error");
       }
     },
-    [activeThread, toast],
+    [activeThread, sessions, newSession, toast],
   );
 
   const renameSession = useCallback(
@@ -117,7 +123,9 @@ export default function App() {
       {/* 桌面侧边栏 */}
       <aside className="hidden md:flex w-60 shrink-0 flex-col border-r border-border bg-card/40">
         <SessionSidebar
+          tab={tab}
           activeThread={activeThread}
+          onNavigate={setTab}
           onSelect={openChat}
           onNew={() => void newSession()}
           onDelete={deleteSession}

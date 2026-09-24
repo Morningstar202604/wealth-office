@@ -1,13 +1,12 @@
-/** 极简全局状态：仪表盘 / 引导 / 历史 / 会话。组件通过 useSyncExternalStore 订阅。 */
+/** 极简全局状态：仪表盘 / 引导 / 会话。组件通过 useSyncExternalStore 订阅。 */
 
 import { useSyncExternalStore } from "react";
 import { api } from "./api";
-import type { BootstrapData, DashboardData, RunRecord, SessionItem } from "./types";
+import type { BootstrapData, DashboardData, SessionItem } from "./types";
 
 export interface AppState {
   dashboard: DashboardData | null;
   bootstrap: BootstrapData | null;
-  history: RunRecord[];
   sessions: SessionItem[];
   loading: boolean;
   error: string | null;
@@ -17,7 +16,6 @@ export interface AppState {
 let state: AppState = {
   dashboard: null,
   bootstrap: null,
-  history: [],
   sessions: [],
   loading: false,
   error: null,
@@ -59,15 +57,6 @@ async function refreshBootstrap(): Promise<void> {
   }
 }
 
-async function refreshHistory(): Promise<void> {
-  try {
-    const data = await api<{ runs: RunRecord[] }>("/api/history?limit=30");
-    setState({ history: data.runs ?? [] });
-  } catch {
-    /* ignore */
-  }
-}
-
 async function refreshSessions(): Promise<void> {
   try {
     const data = await api<{ sessions: SessionItem[] }>("/api/sessions");
@@ -81,7 +70,6 @@ async function refreshSessions(): Promise<void> {
 function bump(): void {
   setState({ refreshTick: state.refreshTick + 1 });
   void refreshDashboard();
-  void refreshHistory();
   void refreshSessions();
 }
 
@@ -93,7 +81,6 @@ export const store = {
   useApp,
   refreshDashboard,
   refreshBootstrap,
-  refreshHistory,
   refreshSessions,
   bump,
   getState,

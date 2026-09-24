@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from . import analysis, db, llm
+from .quotes import live_quotes
 
 Emit = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -51,10 +52,8 @@ async def run_question(question: str, emit: Emit) -> dict[str, Any]:
     routes = ["market", "ledger"] if route == "both" else [route]
     market = ledger = None
 
-    # 并行取数分析（两个视角相互独立）
+    # 取数分析（市场 / 账本视角共用同一份行情）
     positions = await db.list_positions()
-    from .quotes import live_quotes
-
     live = await live_quotes(positions)
 
     if "market" in routes:

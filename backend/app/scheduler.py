@@ -32,7 +32,10 @@ def _parse_time(value: str | None) -> tuple[int, int] | None:
         return None
     try:
         h, m = value.strip().split(":")
-        return int(h), int(m)
+        hh, mm = int(h), int(m)
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            return None
+        return hh, mm
     except (ValueError, TypeError):
         return None
 

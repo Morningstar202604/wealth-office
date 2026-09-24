@@ -65,6 +65,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const root = document.documentElement;
     root.classList.toggle("dark", resolved === "dark");
+    root.dataset.theme = resolved;
     root.dataset.brand = brand;
     root.dataset.density = density;
     root.dataset.motion = motion;
@@ -72,13 +73,15 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     if (meta) meta.setAttribute("content", resolved === "dark" ? "#0b1120" : "#f6f8fb");
   }, [resolved, brand, density, motion]);
 
-  // 跟随系统切换
+  // 跟随系统切换（首帧与主 effect 一致；后续系统明暗变化只改 class 与 meta）
   useEffect(() => {
     if (theme !== "system") return;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     const handler = () => {
       const root = document.documentElement;
       root.classList.toggle("dark", mq.matches);
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute("content", mq.matches ? "#0b1120" : "#f6f8fb");
     };
     mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);

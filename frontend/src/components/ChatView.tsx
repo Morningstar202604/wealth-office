@@ -24,6 +24,8 @@ interface ChatMessage {
   id: number;
   role: "user" | "assistant";
   text: string;
+  /** assistant 消息对应的提问（导出时用） */
+  q?: string;
   meta?: AnswerMeta;
   steps: StepInfo[];
   error?: string;
@@ -36,14 +38,15 @@ const BASE_SUGGESTIONS = [
   "我的组合现在赚还是亏？",
 ];
 
-/** 依据仪表盘风险项生成针对性追问（贴合当前数据，不是固定文案） */
+/** 依据仪表盘风险项生成针对性追问（贴合当前数据，不是固定文案）。
+ *  注意：后端 risk_checks 的 code 全大写（CONCENTRATION 等），这里必须一一对应。 */
 function dynamicSuggestions(flags: RunRecord["flags"]): string[] {
   const map: Record<string, string> = {
-    concentration: "持仓太集中，怎么分散风险？",
-    industry_concentration: "行业占比太高，需要调整吗？",
-    high_interest_debt: "高息负债怎么还更划算？",
-    savings_rate: "储蓄率偏低，怎么改善？",
-    emergency: "应急金不足，怎么补？",
+    CONCENTRATION: "持仓太集中，怎么分散风险？",
+    HIGH_RATE_DEBT: "高息负债怎么还更划算？",
+    SAVINGS_RATE: "储蓄率偏低，怎么改善？",
+    EMERGENCY_FUND: "应急金不足，怎么补？",
+    DTI: "负债收入比偏高，需要注意什么？",
   };
   const out: string[] = [];
   for (const f of flags.slice(0, 2)) {
@@ -98,6 +101,7 @@ export function ChatView({ threadId, onNewSession }: { threadId: string; onNewSe
               id: msgSeq++,
               role: "assistant" as const,
               text: r.answer,
+              q: r.question,
               steps: [],
               meta: {
                 answer: r.answer,
@@ -133,7 +137,7 @@ export function ChatView({ threadId, onNewSession }: { threadId: string; onNewSe
     setBusy(true);
 
     const userMsg: ChatMessage = { id: msgSeq++, role: "user", text: q, steps: [] };
-    const asstMsg: ChatMessage = { id: msgSeq++, role: "assistant", text: "", steps: [] };
+    const asstMsg: ChatMessage = { id: msgSeq++, role: "assistant", text: "", q, steps: [] };
     setMessages((prev) => [...prev, userMsg, asstMsg]);
     scrollBottom();
 
@@ -234,12 +238,18 @@ export function ChatView({ threadId, onNewSession }: { threadId: string; onNewSe
     }
   };
 
-  /** 把回答导出为 Markdown（复制 / 下载） */
-  const exportAnswer = async (_m: ChatMessage, action: "copy" | "download") => {
+  /** 把「问题 + 回答」导出为 Markdown（复制 / 下载） */
+  const exportAnswer = async (m: ChatMessage, action: "copy" | "download") => {
     const md = [
       `# 随身理财 · 问答记录`,
       ``,
+      `**问题**：${m.q ?? ""}`,
+      ``,
       `**时间**：${new Date().toLocaleString("zh-CN")}`,
+      ``,
+      `---`,
+      ``,
+      m.text,
       ``,
       `---`,
       ``,
@@ -310,7 +320,7 @@ export function ChatView({ threadId, onNewSession }: { threadId: string; onNewSe
               ) : (
                 <Card className="p-[var(--card-pad)]">
                   {m.error ? (
-                    <div className="text-sm text-red-600">出错了：{m.error}</div>
+                    <div className="text-sm text-red-600 dark:text-red-400">出错了：{m.error}</div>
                   ) : m.text === "" ? (
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
                       <Loader2 className="w-4 h-4 animate-spin" /> 正在分析…

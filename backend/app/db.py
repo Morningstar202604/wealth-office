@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -153,7 +154,8 @@ async def init_db() -> None:
     _db.row_factory = aiosqlite.Row
     await _db.execute("PRAGMA journal_mode=WAL")
     await _db.executescript(SCHEMA)
-    if await _count("positions") == 0:
+    # 全新库（settings 表为空）才种示例数据；老库即使用户清空了持仓也绝不重置
+    if await _count("settings") == 0:
         await _seed_all()
     await _ensure_defaults()
     await _migrate_sessions_from_runs()
@@ -220,12 +222,12 @@ async def _ensure_defaults() -> None:
 
 
 async def _migrate_sessions_from_runs() -> None:
-    """历史迁移：已有问答（旧库）按 thread 生成会话，标题取首个问题。"""
+    """历史迁移：已有问答（旧库）按 thread 生成会话，标题取该线程首个问题。"""
     conn = await _conn()
     rows = await (await conn.execute(
-        "SELECT r.thread_id, r.question, MIN(r.id) AS first_id"
-        " FROM runs r WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.thread_id = r.thread_id)"
-        " GROUP BY r.thread_id"
+        "SELECT r.thread_id, r.question FROM runs r"
+        " WHERE r.id = (SELECT MIN(id) FROM runs WHERE thread_id = r.thread_id)"
+        "   AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.thread_id = r.thread_id)"
     )).fetchall()
     if not rows:
         return
@@ -257,13 +259,6 @@ async def fetch_all(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
     cur = await conn.execute(sql, params)
     rows = await cur.fetchall()
     return [dict(r) for r in rows]
-
-
-async def fetch_one(sql: str, params: tuple = ()) -> dict[str, Any] | None:
-    conn = await _conn()
-    cur = await conn.execute(sql, params)
-    row = await cur.fetchone()
-    return dict(row) if row else None
 
 
 async def list_positions() -> list[dict[str, Any]]:
@@ -323,6 +318,7 @@ async def delete_position(symbol: str) -> dict[str, Any]:
     conn = await _conn()
     cur = await conn.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
     await conn.commit()
+    await _mark_user_data(conn)
     return {"ok": True, "deleted": cur.rowcount}
 
 
@@ -341,6 +337,7 @@ async def delete_transaction(tx_id: int) -> dict[str, Any]:
     conn = await _conn()
     cur = await conn.execute("DELETE FROM transactions WHERE id=?", (int(tx_id),))
     await conn.commit()
+    await _mark_user_data(conn)
     return {"ok": True, "deleted": cur.rowcount}
 
 
@@ -369,6 +366,7 @@ async def delete_debt(name: str) -> dict[str, Any]:
     conn = await _conn()
     cur = await conn.execute("DELETE FROM debts WHERE name=?", (name,))
     await conn.commit()
+    await _mark_user_data(conn)
     return {"ok": True, "deleted": cur.rowcount}
 
 
@@ -498,9 +496,7 @@ async def delete_session(session_id: int) -> dict[str, Any]:
 
 
 def uuid_hex() -> str:
-    import uuid as _uuid
-
-    return _uuid.uuid4().hex
+    return uuid.uuid4().hex
 
 
 # --------------------------------------------------------------------------
@@ -509,6 +505,12 @@ def uuid_hex() -> str:
 
 async def export_data() -> dict[str, Any]:
     """全量导出（备份）：持仓 / 流水 / 订阅 / 负债 / 设置 / 会话 / 问答。"""
+    runs = await fetch_all("SELECT * FROM runs ORDER BY id")
+    for r in runs:
+        try:
+            r["flags"] = json.loads(r.pop("flags_json") or "[]")
+        except Exception:
+            r["flags"] = []
     return {
         "version": 2,
         "exported_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -518,7 +520,7 @@ async def export_data() -> dict[str, Any]:
         "debts": await list_debts(),
         "settings": await get_settings(),
         "sessions": await list_sessions(),
-        "runs": await list_runs(limit=1000),
+        "runs": runs,
     }
 
 

@@ -3,30 +3,35 @@
 import { useState } from "react";
 import {
   LayoutDashboard, MessageSquare, NotebookPen, Plus, Settings,
-  Trash2, Pencil, Check, X, MessageCircle,
+  Trash2, Pencil, MessageCircle,
 } from "lucide-react";
-import { BRAND } from "@/lib/brand";
-import { BrandLogo } from "@/lib/brand";
+import { BrandLogo, BRAND } from "@/lib/brand";
 import { store } from "@/lib/store";
-import { fmtDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { SessionItem } from "@/lib/types";
 
-const NAV = [
-  { id: "dashboard" as const, label: "仪表盘", icon: LayoutDashboard },
-  { id: "chat" as const, label: "问答", icon: MessageSquare },
-  { id: "ledger" as const, label: "记账", icon: NotebookPen },
+type SidebarTab = "dashboard" | "chat" | "ledger" | "settings";
+
+const NAV: { id: SidebarTab; label: string; icon: typeof LayoutDashboard }[] = [
+  { id: "dashboard", label: "仪表盘", icon: LayoutDashboard },
+  { id: "chat", label: "问答", icon: MessageSquare },
+  { id: "ledger", label: "记账", icon: NotebookPen },
 ];
 
 export function SessionSidebar({
+  tab,
   activeThread,
+  onNavigate,
   onSelect,
   onNew,
   onDelete,
   onRename,
   onOpenSettings,
 }: {
+  tab: SidebarTab;
   activeThread: string | null;
+  /** 切换页面（chat 时由内部决定落到最近会话） */
+  onNavigate: (t: SidebarTab) => void;
   onSelect: (threadId: string | null) => void;
   onNew: () => void;
   onDelete: (id: number, threadId: string) => void;
@@ -34,20 +39,21 @@ export function SessionSidebar({
   onOpenSettings: () => void;
 }) {
   const { sessions } = store.useApp();
-  const [tab, setTab] = useState<"dashboard" | "chat" | "ledger">("dashboard");
   const [editing, setEditing] = useState<number | null>(null);
   const [editTitle, setEditTitle] = useState("");
 
+  const go = (id: SidebarTab) => {
+    onNavigate(id);
+    if (id === "chat") onSelect(sessions[0]?.thread_id ?? null);
+  };
+
   return (
     <div className="flex h-full flex-col">
-      {/* 品牌 */}
+      {/* 品牌：点击回仪表盘 */}
       <button
         type="button"
         className="flex items-center gap-2.5 px-4 py-3.5 text-left"
-        onClick={() => {
-          setTab("dashboard");
-          onSelect(null);
-        }}
+        onClick={() => onNavigate("dashboard")}
       >
         <BrandLogo size={30} />
         <span>
@@ -68,10 +74,7 @@ export function SessionSidebar({
                 ? "bg-primary/10 text-primary"
                 : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
-            onClick={() => {
-              setTab(n.id);
-              if (n.id === "chat") onSelect(sessions[0]?.thread_id ?? null);
-            }}
+            onClick={() => go(n.id)}
           >
             <n.icon className="w-4 h-4" />
             {n.label}

@@ -41,7 +41,7 @@ export function SummaryBlock({ meta }: { meta: AnswerMeta }) {
       {meta.flags.length > 0 && (
         <ul className="mt-2 space-y-1">
           {meta.flags.map((f, i) => (
-            <li key={i} className="text-xs text-amber-700">
+            <li key={i} className="text-xs text-amber-700 dark:text-amber-400">
               · {f.text}
             </li>
           ))}

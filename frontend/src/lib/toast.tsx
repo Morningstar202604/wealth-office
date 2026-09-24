@@ -32,15 +32,6 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo(() => ({ toast }), [toast]);
 
-  const icon =
-    items.length > 0
-      ? {
-          ok: <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />,
-          error: <XCircle className="w-4 h-4 text-red-500 shrink-0" />,
-          info: <Info className="w-4 h-4 text-sky-500 shrink-0" />,
-        }[items[items.length - 1].kind]
-      : null;
-
   return (
     <ToastCtx.Provider value={value}>
       {children}

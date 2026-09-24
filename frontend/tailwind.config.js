@@ -31,14 +31,10 @@ export default {
           DEFAULT: 'hsl(var(--card))',
           foreground: 'hsl(var(--card-foreground))',
         },
-        // 品牌 / 角色强调色
+        // 品牌主色（Logo 等视觉元素；切换品牌只改 primary）
         brand: {
           DEFAULT: 'hsl(var(--brand))',
-          blue: 'hsl(var(--brand-blue))',
-          teal: 'hsl(var(--brand-teal))',
-          green: 'hsl(var(--brand-green))',
           gold: 'hsl(var(--brand-gold))',
-          purple: 'hsl(var(--brand-purple))',
         },
         // 涨跌语义色
         up: '#d97706',

@@ -11,7 +11,10 @@ const KIND_OPTIONS = ["股票", "ETF", "基金", "现金", "其他"];
 const CATEGORY_OPTIONS = ["收入", "餐饮", "居住", "交通", "购物", "订阅", "投资", "还款", "其他"];
 
 function today(): string {
-  return new Date().toISOString().slice(0, 10);
+  // 用本地时间拼 YYYY-MM-DD（toISOString 是 UTC，东八区凌晨会取到前一天）
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 function Section({
@@ -109,7 +112,7 @@ function PositionForm({ onDone }: { onDone: () => void }) {
           </div>
         </div>
       </div>
-      {err && <div className="text-xs text-red-600">{err}</div>}
+      {err && <div className="text-xs text-red-600 dark:text-red-400">{err}</div>}
       <Button size="sm" onClick={() => void submit()} disabled={!f.symbol || !f.shares || !f.cost || !f.last}>
         <Plus className="w-3.5 h-3.5" /> 添加持仓
       </Button>
@@ -168,7 +171,7 @@ function TransactionForm({ onDone }: { onDone: () => void }) {
       <div className="text-[11px] text-muted-foreground">
         选择「收入」记为正数，其余分类记支出。
       </div>
-      {err && <div className="text-xs text-red-600">{err}</div>}
+      {err && <div className="text-xs text-red-600 dark:text-red-400">{err}</div>}
       <Button size="sm" onClick={() => void submit()} disabled={!f.item || !f.amount}>
         <Plus className="w-3.5 h-3.5" /> 记一笔
       </Button>
@@ -219,7 +222,7 @@ function DebtForm({ onDone }: { onDone: () => void }) {
           <input className={inputCls} type="number" value={f.rate} onChange={(e) => setF({ ...f, rate: e.target.value })} placeholder="3.45" />
         </div>
       </div>
-      {err && <div className="text-xs text-red-600">{err}</div>}
+      {err && <div className="text-xs text-red-600 dark:text-red-400">{err}</div>}
       <Button size="sm" onClick={() => void submit()} disabled={!f.name}>
         <Plus className="w-3.5 h-3.5" /> 添加负债
       </Button>
@@ -294,7 +297,7 @@ export function EntryView() {
                     <span className="text-muted-foreground text-xs ml-2">{t.date}</span>
                   </span>
                   <span className="flex items-center gap-2">
-                    <span className={`tabular-nums ${t.amount > 0 ? "text-red-600" : "text-emerald-600"}`}>
+                    <span className={`tabular-nums ${t.amount > 0 ? "text-up" : "text-down"}`}>
                       {fmtMoney(t.amount, true)}
                     </span>
                     <button

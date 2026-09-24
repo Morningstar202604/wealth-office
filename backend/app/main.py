@@ -124,12 +124,21 @@ async def remove_position(symbol: str) -> dict:
 
 @app.post("/api/transactions")
 async def create_transaction(payload: dict) -> dict:
+    import re
+
     date = str(payload.get("date") or "").strip()
     item = str(payload.get("item") or "").strip()
     category = str(payload.get("category") or "其他").strip() or "其他"
-    amount = float(payload.get("amount", 0) or 0)
-    if not date or not item or amount == 0:
-        return JSONResponse({"error": "日期、名称与金额（不为 0）必填"}, status_code=400)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        return JSONResponse({"error": "日期需为 YYYY-MM-DD 格式"}, status_code=400)
+    if not item:
+        return JSONResponse({"error": "名称必填"}, status_code=400)
+    try:
+        amount = float(payload.get("amount", 0) or 0)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "金额不合法"}, status_code=400)
+    if amount == 0:
+        return JSONResponse({"error": "金额不能为 0"}, status_code=400)
     try:
         return await db.add_transaction(date, item, category, amount)
     except Exception as exc:  # noqa: BLE001
@@ -372,7 +381,7 @@ async def export_data() -> dict:
 
 @app.get("/api/trend")
 async def trend(months: int = 6) -> dict:
-    return {"months": await db.monthly_trend(min(months, 24))}
+    return {"months": await db.monthly_trend(max(1, min(months, 24)))}
 
 
 @app.get("/api/reports")

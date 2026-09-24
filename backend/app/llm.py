@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import AsyncIterator
 
@@ -44,35 +45,6 @@ async def aclose() -> None:
         await _client.aclose()
 
 
-async def narrate(system: str, user: str, fallback: str) -> tuple[str, str]:
-    """整段调用；失败返回 (fallback, 'template')。"""
-    cfg = _config()
-    if cfg is None:
-        return fallback, "template"
-    try:
-        payload = {
-            "model": cfg["model"],
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": 0.2,
-            "stream": False,
-        }
-        resp = await _client_ref().post(
-            f"{cfg['base']}/chat/completions",
-            json=payload,
-            headers={"Authorization": f"Bearer {cfg['key']}"},
-        )
-        resp.raise_for_status()
-        text = (resp.json().get("choices") or [{}])[0].get("message", {}).get("content", "")
-        if len(str(text).strip()) < 10:
-            return fallback, "template"
-        return str(text).strip(), "llm"
-    except Exception:  # noqa: BLE001 — 任何异常都走模板兜底
-        return fallback, "template"
-
-
 async def stream_narrate(system: str, user: str, fallback: str) -> AsyncIterator[tuple[str, str]]:
     """流式调用；失败或空流时整体退回模板。
 
@@ -106,7 +78,6 @@ async def stream_narrate(system: str, user: str, fallback: str) -> AsyncIterator
                 chunk = line[5:].strip()
                 if chunk == "[DONE]":
                     break
-                import json
 
                 try:
                     delta = json.loads(chunk)["choices"][0]["delta"].get("content", "")

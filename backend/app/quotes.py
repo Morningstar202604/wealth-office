@@ -130,10 +130,5 @@ async def live_quotes(positions: list[dict[str, Any]]) -> dict[str, float]:
     return got
 
 
-def quote_source_label() -> str:
-    """兼容入口：由 analysis 层改用 last_source() 标注，保留给外部引用。"""
-    return "东方财富实时价" if _last_source == "eastmoney" else "组合库快照价"
-
-
 async def invalidate_quotes_cache() -> None:
     _cache.clear()

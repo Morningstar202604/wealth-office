@@ -28,11 +28,6 @@ export function pnlClass(v: number | undefined | null): string {
   return v > 0 ? "text-up" : "text-down";
 }
 
-export function pnlBgClass(v: number | undefined | null): string {
-  if (v == null || Number.isNaN(v) || v === 0) return "";
-  return v > 0 ? "bg-up/10 text-up" : "bg-down/10 text-down";
-}
-
 /** 日期友好显示 */
 export function fmtDate(iso: string): string {
   try {
