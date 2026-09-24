@@ -256,13 +256,13 @@ async def collect_dashboard() -> dict[str, Any]:
     settings = await db.get_settings()
     mode = settings.get("quote_source_mode", "auto")
 
-    # 行情源标注：快照模式固定标快照；auto/eastmoney 按本次是否拿到实时价标注
+    # 行情源标注：快照模式固定标快照；auto/eastmoney 按本次实际生效来源标注
     if mode == "snapshot":
         quotes_label = "组合库快照价"
+    elif quotes.last_source() == "eastmoney":
+        quotes_label = "东方财富实时价"
     else:
-        realtime_symbols = [p["symbol"] for p in positions if p["kind"] != "现金"]
-        got_realtime = bool(live) and any(s in live for s in realtime_symbols)
-        quotes_label = "东方财富实时价" if got_realtime else "组合库快照价（实时源不可用，自动降级）"
+        quotes_label = "组合库快照价（实时源不可用，自动降级）"
 
     m = market_view(positions, live)
     txs = await db.list_transactions()

@@ -45,7 +45,7 @@ def test_parse_price(raw, expected) -> None:
 
 
 async def test_live_quotes_snapshot_mode(monkeypatch) -> None:
-    """snapshot 模式不走网络，直接用库内 last。"""
+    """snapshot 模式不走网络，直接用库内 last，且来源标注为快照。"""
     async def _settings():
         return {"quote_source_mode": "snapshot"}
     monkeypatch.setattr(quotes.db, "get_settings", _settings)
@@ -55,10 +55,11 @@ async def test_live_quotes_snapshot_mode(monkeypatch) -> None:
     ]
     out = await quotes.live_quotes(positions)
     assert out == {"600519": 1521.0, "CASH": 55000.0}
+    assert quotes.last_source() == "snapshot"
 
 
 async def test_live_quotes_falls_back_to_snapshot(monkeypatch) -> None:
-    """auto 模式东财失败 → 降级快照价。"""
+    """auto 模式东财失败 → 降级快照价，且来源标注为快照。"""
     async def _settings():
         return {"quote_source_mode": "auto"}
     monkeypatch.setattr(quotes.db, "get_settings", _settings)
@@ -71,3 +72,21 @@ async def test_live_quotes_falls_back_to_snapshot(monkeypatch) -> None:
     ]
     out = await quotes.live_quotes(positions)
     assert out == {"600519": 1521.0, "CASH": 55000.0}
+    assert quotes.last_source() == "snapshot"
+
+
+async def test_live_quotes_eastmoney_marks_source(monkeypatch) -> None:
+    """auto 模式东财成功 → 使用实时价，来源标注为 eastmoney。"""
+    async def _settings():
+        return {"quote_source_mode": "auto"}
+    monkeypatch.setattr(quotes.db, "get_settings", _settings)
+    async def _ok(_symbols):
+        return {"000001": 11.5}
+    monkeypatch.setattr(quotes, "_eastmoney_quotes", _ok)
+    positions = [
+        {"symbol": "000001", "kind": "股票", "last": 11.0},
+        {"symbol": "CASH", "kind": "现金", "last": 55000.0},
+    ]
+    out = await quotes.live_quotes(positions)
+    assert out["000001"] == 11.5
+    assert quotes.last_source() == "eastmoney"

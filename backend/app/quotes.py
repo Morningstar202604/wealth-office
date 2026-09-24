@@ -15,7 +15,6 @@ import httpx
 from . import db
 
 EASTMONEY_URL = "https://push2.eastmoney.com/api/qt/ulist.np/get"
-_SOURCE_LABEL = {"auto": "东方财富实时价（失败降级快照）", "eastmoney": "东方财富实时价", "snapshot": "组合库快照价"}
 
 
 def _to_secid(symbol: str) -> str | None:
@@ -87,9 +86,15 @@ async def _eastmoney_quotes(symbols: list[str]) -> dict[str, float]:
     return out
 
 
-# 行情缓存：同一批符号 30s 内不重复请求
-_cache: dict[str, tuple[float, dict[str, float]]] = {}
+# 行情缓存：同一批符号 30s 内不重复请求；同时记录实际生效来源（供 UI 诚信标注）
+_cache: dict[str, tuple[float, dict[str, float], str]] = {}
 _TTL = 30.0
+_last_source = "snapshot"
+
+
+def last_source() -> str:
+    """最近一次取价实际生效的来源：eastmoney | snapshot。"""
+    return _last_source
 
 
 def _snapshot(positions: list[dict[str, Any]]) -> dict[str, float]:
@@ -100,36 +105,34 @@ async def live_quotes(positions: list[dict[str, Any]]) -> dict[str, float]:
     """按设置取行情：auto/eastmoney → 东财（失败降级快照）；snapshot → 快照价。
 
     只对非现金标的请求实时价；现金直接用库里价格。
+    每次调用都会更新 last_source()，供来源标注使用。
     """
+    global _last_source
     mode = (await db.get_settings()).get("quote_source_mode", "auto")
     symbols = [p["symbol"] for p in positions if p["kind"] != "现金"]
     if mode == "snapshot" or not symbols:
+        _last_source = "snapshot"
         return _snapshot(positions)
 
     key = ",".join(sorted(symbols))
     hit = _cache.get(key)
     if hit and time.time() - hit[0] < _TTL:
+        _last_source = hit[2]
         return hit[1]
 
     got = await _eastmoney_quotes(symbols)
-    if not got:
+    if got:
+        _last_source = "eastmoney"
+    else:
         got = _snapshot(positions)
-    _cache[key] = (time.time(), got)
+        _last_source = "snapshot"
+    _cache[key] = (time.time(), got, _last_source)
     return got
 
 
 def quote_source_label() -> str:
-    mode = _current_mode
-    return _SOURCE_LABEL.get(mode, _SOURCE_LABEL["auto"])
-
-
-# 最近一次生效的行情源（由分析层更新，供"数据来源"展示）
-_current_mode = "auto"
-
-
-def set_current_mode(mode: str) -> None:
-    global _current_mode
-    _current_mode = mode
+    """兼容入口：由 analysis 层改用 last_source() 标注，保留给外部引用。"""
+    return "东方财富实时价" if _last_source == "eastmoney" else "组合库快照价"
 
 
 async def invalidate_quotes_cache() -> None:
