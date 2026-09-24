@@ -1,50 +1,52 @@
-import { fmtMoney, fmtPct, pnlClass } from '@/lib/format'
+import { Badge } from "@/components/ui/badge";
+import { fmtMoney, pnlClass } from "@/lib/format";
+import type { AnswerMeta } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
-/** 结论摘要：一行安静的灰色元信息（· 分隔），不再用芯片/底色/大徽章。
- *  关键数字保留涨跌色便于扫读，其余全部去噪。 */
-export function SummaryBlock({
-  market,
-  ledger,
-  flags,
-}: {
-  market?: { total_market_value?: number; total_pnl?: number; total_pnl_pct?: number } | null
-  ledger?: { net?: number; savings_rate?: number } | null
-  flags?: { code: string; text: string }[] | null
-  level?: string | null
-  quiet?: boolean
-}) {
-  const parts: { label: string; value: string; cls?: string }[] = []
-  if (market?.total_market_value != null)
-    parts.push({ label: '总市值', value: fmtMoney(market.total_market_value) })
-  if (market?.total_pnl != null)
-    parts.push({
-      label: '浮盈亏',
-      value: `${fmtMoney(market.total_pnl, true)}（${fmtPct(market.total_pnl_pct, true)}）`,
-      cls: pnlClass(market.total_pnl),
-    })
-  if (ledger?.net != null)
-    parts.push({
-      label: '本月结余',
-      value: `${fmtMoney(ledger.net, true)}${ledger.savings_rate != null ? ` · 储蓄率 ${ledger.savings_rate}%` : ''}`,
-      cls: pnlClass(ledger.net),
-    })
-  if (flags && flags.length > 0) parts.push({ label: '风险', value: `${flags.length} 项`, cls: 'text-amber-600' })
-
-  if (parts.length === 0) return null
+/** 回答尾部摘要：等级 + 关键数字 + 风险提示（全部来自后端 final 事件，口径唯一）。 */
+export function SummaryBlock({ meta }: { meta: AnswerMeta }) {
+  const m = meta.metrics;
+  const chips: { label: string; value: string; cls?: string }[] = [];
+  if (m.total_market_value != null)
+    chips.push({ label: "总市值", value: fmtMoney(m.total_market_value) });
+  if (m.total_pnl != null)
+    chips.push({
+      label: "累计盈亏",
+      value: fmtMoney(m.total_pnl, true),
+      cls: pnlClass(m.total_pnl),
+    });
+  if (m.net != null) chips.push({ label: "本月结余", value: fmtMoney(m.net, true) });
+  if (m.savings_rate != null) chips.push({ label: "储蓄率", value: `${m.savings_rate}%` });
+  if (m.debt_monthly != null)
+    chips.push({ label: "负债月供", value: `${fmtMoney(m.debt_monthly)}/月` });
 
   return (
-    <div
-      className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground"
-      style={{ fontVariantNumeric: 'tabular-nums' }}
-    >
-      {parts.map((p, i) => (
-        <span key={p.label} className="inline-flex items-center gap-1.5">
-          {i > 0 && <span className="text-border">·</span>}
-          <span>
-            {p.label} <span className={p.cls ?? 'text-foreground/80'}>{p.value}</span>
-          </span>
+    <div className="mt-3 rounded-lg border border-border bg-muted/30 px-3 py-2.5">
+      <div className="flex items-center gap-2">
+        <Badge variant={meta.level === "L2 建议" ? "warn" : "ok"}>{meta.level}</Badge>
+        <span className="text-xs text-muted-foreground">
+          {meta.llm === "llm" ? "智能问答" : "本地规则引擎"}
         </span>
-      ))}
+      </div>
+      {chips.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm tabular-nums">
+          {chips.map((c) => (
+            <span key={c.label} className="text-muted-foreground">
+              {c.label}
+              <b className={cn("ml-1 text-foreground", c.cls)}>{c.value}</b>
+            </span>
+          ))}
+        </div>
+      )}
+      {meta.flags.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {meta.flags.map((f, i) => (
+            <li key={i} className="text-xs text-amber-700">
+              · {f.text}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
-  )
+  );
 }

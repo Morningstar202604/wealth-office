@@ -15,10 +15,8 @@ select = [
 ignore = [
   # 中文 docstring/日志串天然易超 88
   "E501",
-  # 仓库大量 `# noqa: BLE001` 给审计看；BLE 未进 select，避免 RUF100 误杀
+  # 代码按审计习惯保留 `# noqa: BLE001`；BLE 未进 select，避免 RUF100 误杀
   "RUF100",
-  # demo_data.__all__ 顺序是 MCP 合同顺序，不按字母重排
-  "RUF022",
   "RUF001",
   "RUF002",
   "RUF003",

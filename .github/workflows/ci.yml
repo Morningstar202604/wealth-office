@@ -10,12 +10,28 @@ permissions:
   contents: read
 
 jobs:
-  syntax-check:
+  backend:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: 语法检查（compileall）
-        run: python -m compileall -q backend
+      - name: 安装依赖
+        run: pip install -q -r backend/requirements.txt
+      - name: 静态检查（ruff）
+        run: cd backend && python -m ruff check app tests
+      - name: 测试（pytest）
+        run: cd backend && python -m pytest tests -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: 安装依赖
+        run: cd frontend && npm install --no-audit --no-fund
+      - name: 构建
+        run: cd frontend && npm run build

@@ -1,0 +1,92 @@
+"""分析内核单测：市场/账本/风控/模板叙述（纯函数，不碰网络与数据库）。"""
+
+from __future__ import annotations
+
+from app import analysis
+
+POSITIONS = [
+    {"symbol": "600519", "name": "贵州茅台", "kind": "股票", "industry": "白酒",
+     "shares": 100, "cost": 1680.0, "last": 1521.0},
+    {"symbol": "CASH", "name": "活期现金", "kind": "现金", "industry": "现金",
+     "shares": 1, "cost": 40000.0, "last": 40000.0},
+]
+
+LIVE = {"600519": 1521.0, "CASH": 40000.0}
+
+TXN = [
+    {"id": 1, "date": "2026-09-02", "item": "工资", "category": "收入", "amount": 24800.0},
+    {"id": 2, "date": "2026-09-03", "item": "房租", "category": "居住", "amount": -5200.0},
+    {"id": 3, "date": "2026-09-05", "item": "外卖", "category": "餐饮", "amount": -1860.0},
+    {"id": 4, "date": "2026-08-20", "item": "上月餐费", "category": "餐饮", "amount": -900.0},  # 上月，应被过滤
+]
+
+SETTINGS = {
+    "monthly_income": "24800",
+    "emergency_target_months": "6",
+    "essential_categories": "居住,餐饮,交通",
+}
+
+
+def test_market_view_totals() -> None:
+    m = analysis.market_view(POSITIONS, LIVE)
+    assert m["total_market_value"] == 100 * 1521.0 + 40000.0
+    assert m["total_pnl"] == 100 * (1521.0 - 1680.0)
+    assert len(m["positions"]) == 2
+
+
+def test_market_view_concentration_breach() -> None:
+    m = analysis.market_view(POSITIONS, LIVE)
+    top = m["concentration"]["by_asset"][0]
+    assert top["name"] == "贵州茅台"
+    assert any(b["name"] == "贵州茅台" for b in m["concentration"]["asset_breaches"])
+
+
+def test_ledger_view_filters_other_month() -> None:
+    led = analysis.ledger_view(TXN, [], [], SETTINGS, POSITIONS, LIVE)
+    assert led["expense"] == 5200.0 + 1860.0  # 上月 900 不计入
+    assert led["income"] == 24800.0
+    assert round(led["net"], 2) == 24800.0 - 7060.0
+
+
+def test_ledger_view_emergency() -> None:
+    led = analysis.ledger_view(TXN, [], [], SETTINGS, POSITIONS, LIVE)
+    em = led["emergency"]
+    assert em["essential_monthly"] == 5200.0 + 1860.0
+    assert round(em["months_covered"], 1) == round(40000.0 / 7060.0, 1)
+    assert em["ok"] is False  # 5.7 个月 < 6 个月目标
+
+
+def test_risk_checks_flags() -> None:
+    m = analysis.market_view(POSITIONS, LIVE)
+    led = analysis.ledger_view(TXN, [], [], SETTINGS, POSITIONS, LIVE)
+    flags = analysis.risk_checks(m, led)
+    codes = {f["code"] for f in flags}
+    assert "CONCENTRATION" in codes
+    assert "EMERGENCY_FUND" in codes
+
+
+def test_risk_checks_no_flags_on_healthy() -> None:
+    healthy_pos = [
+        {"symbol": "A", "name": "宽基", "kind": "ETF", "industry": "指数",
+         "shares": 10, "cost": 100.0, "last": 100.0},
+        {"symbol": "CASH", "name": "现金", "kind": "现金", "industry": "现金",
+         "shares": 1, "cost": 80000.0, "last": 80000.0},
+    ]
+    healthy_tx = [
+        {"id": 1, "date": "2026-09-01", "item": "工资", "category": "收入", "amount": 24800.0},
+        {"id": 2, "date": "2026-09-02", "item": "房租", "category": "居住", "amount": -5000.0},
+    ]
+    s = {**SETTINGS, "emergency_target_months": "3"}
+    m = analysis.market_view(healthy_pos, {p["symbol"]: p["last"] for p in healthy_pos})
+    led = analysis.ledger_view(healthy_tx, [], [], s, healthy_pos, {p["symbol"]: p["last"] for p in healthy_pos})
+    assert analysis.risk_checks(m, led) == []
+
+
+def test_template_answer_mentions_numbers() -> None:
+    m = analysis.market_view(POSITIONS, LIVE)
+    led = analysis.ledger_view(TXN, [], [], SETTINGS, POSITIONS, LIVE)
+    flags = analysis.risk_checks(m, led)
+    text = analysis.template_answer(m, led, flags)
+    assert "总市值" in text
+    assert "本月" in text or "2026-09" in text
+    assert "需关注" in text

@@ -1,6 +1,5 @@
-import { clsx, type ClassValue } from 'clsx'
-import { twMerge } from 'tailwind-merge'
+/** 轻量 className 合并（替代 clsx + tailwind-merge）。 */
 
-export function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs))
+export function cn(...parts: Array<string | undefined | false | null>): string {
+  return parts.filter(Boolean).join(" ");
 }

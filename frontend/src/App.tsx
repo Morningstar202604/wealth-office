@@ -1,78 +1,91 @@
-import { useEffect, useRef, useState } from 'react'
-import { AssistantRuntimeProvider, useLocalRuntime } from '@assistant-ui/react'
-import { TooltipProvider } from '@/components/ui/tooltip'
-import { wealthAdapter } from '@/lib/wealthAdapter'
-import * as store from '@/lib/agentStore'
-import { ChatThread } from '@/components/ChatThread'
-import { TeamPanel } from '@/components/TeamPanel'
-import { SettingsModal } from '@/components/SettingsModal'
-import { TopBar } from '@/components/TopBar'
+import { useEffect, useState } from "react";
+import { LayoutDashboard, MessageSquare, NotebookPen, Settings } from "lucide-react";
+import { TopBar } from "@/components/TopBar";
+import { Dashboard } from "@/components/Dashboard";
+import { ChatView } from "@/components/ChatView";
+import { EntryView } from "@/components/EntryView";
+import { SettingsView } from "@/components/SettingsView";
+import { store } from "@/lib/store";
+import { cn } from "@/lib/utils";
+
+type Tab = "dashboard" | "chat" | "ledger" | "settings";
+
+const NAV = [
+  { id: "dashboard" as const, label: "仪表盘", icon: LayoutDashboard },
+  { id: "chat" as const, label: "问答", icon: MessageSquare },
+  { id: "ledger" as const, label: "记账", icon: NotebookPen },
+  { id: "settings" as const, label: "设置", icon: Settings },
+];
 
 export default function App() {
-  const runtime = useLocalRuntime(wealthAdapter)
-  const asked = useRef(false)
-  const [workbenchOpen, setWorkbenchOpen] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [tab, setTab] = useState<Tab>("dashboard");
 
   useEffect(() => {
-    fetch('/api/roster')
-      .then((r) => r.json())
-      .then(store.setRoster)
-      .catch(() => {})
-    fetch('/api/health')
-      .then((r) => r.json())
-      .then(store.setHealth)
-      .catch(() => {})
-    // 跨会话历史：后端持久化，刷新页面后仍显示过往问答
-    fetch('/api/history?limit=20')
-      .then((r) => r.json())
-      .then((d) => store.setHistory(Array.isArray(d?.runs) ? d.runs : []))
-      .catch(() => {})
-  }, [])
-
-  // 深链 ?q= 自动提问（便于演示/分享）
-  useEffect(() => {
-    if (asked.current) return
-    const q = new URLSearchParams(window.location.search).get('q')
-    if (q) {
-      asked.current = true
-      const t = setTimeout(() => {
-        runtime.thread.append({ role: 'user', content: [{ type: 'text', text: q }] })
-      }, 350)
-      return () => clearTimeout(t)
-    }
-  }, [runtime])
+    void store.refreshBootstrap();
+    void store.refreshDashboard();
+    void store.refreshHistory();
+  }, []);
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <TooltipProvider delayDuration={150}>
-        <div className="grid h-full grid-cols-1 lg:grid-cols-[1fr_360px]">
-          <section className="flex min-h-0 flex-col border-border lg:border-r">
-            <TopBar
-              onOpenSettings={() => setSettingsOpen(true)}
-              onToggleWorkbench={() => setWorkbenchOpen(true)}
-            />
-            <div className="min-h-0 flex-1">
-              <ChatThread runtime={runtime} />
-            </div>
-          </section>
-          <div className="hidden min-h-0 lg:block">
-            <TeamPanel />
-          </div>
-        </div>
+    <div className="flex h-full flex-col">
+      <TopBar onOpenSettings={() => setTab("settings")} />
 
-        {/* 窄屏数据工作台抽屉：<1024px 时右栏内容收纳于此，不再断裂 */}
-        {workbenchOpen && (
-          <div className="fixed inset-0 z-40 lg:hidden">
-            <div className="absolute inset-0 bg-foreground/30" onClick={() => setWorkbenchOpen(false)} />
-            <div className="absolute right-0 top-0 h-full w-[88%] max-w-sm bg-background shadow-lift">
-              <TeamPanel onClose={() => setWorkbenchOpen(false)} />
-            </div>
+      {/* 桌面端顶部导航 */}
+      <nav className="hidden md:flex items-center gap-1 border-b border-border bg-card/50 px-4 py-1.5">
+        {NAV.map((n) => (
+          <button
+            key={n.id}
+            type="button"
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
+              tab === n.id
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            )}
+            onClick={() => setTab(n.id)}
+          >
+            <n.icon className="w-4 h-4" />
+            {n.label}
+          </button>
+        ))}
+      </nav>
+
+      <main
+        className={cn(
+          "flex-1 min-h-0",
+          tab === "chat" ? "flex flex-col" : "overflow-y-auto scroll-thin",
+        )}
+      >
+        {tab === "chat" ? (
+          <div className="mx-auto max-w-3xl h-full flex flex-col pb-16 md:pb-0">
+            <ChatView />
+          </div>
+        ) : (
+          <div className="mx-auto max-w-3xl px-4 py-4 pb-24 md:pb-8">
+            {tab === "dashboard" && <Dashboard />}
+            {tab === "ledger" && <EntryView />}
+            {tab === "settings" && <SettingsView />}
           </div>
         )}
+      </main>
 
-        {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
-      </TooltipProvider>
-    </AssistantRuntimeProvider>
-  )
+      {/* 移动端底部导航 */}
+      <nav className="md:hidden fixed bottom-0 inset-x-0 z-10 glass border-t border-border grid grid-cols-4">
+        {NAV.map((n) => (
+          <button
+            key={n.id}
+            type="button"
+            className={cn(
+              "flex flex-col items-center gap-0.5 py-2 text-[11px] font-medium transition-colors",
+              tab === n.id ? "text-primary" : "text-muted-foreground",
+            )}
+            onClick={() => setTab(n.id)}
+          >
+            <n.icon className="w-5 h-5" />
+            {n.label}
+          </button>
+        ))}
+      </nav>
+    </div>
+  );
 }

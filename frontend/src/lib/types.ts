@@ -1,93 +1,130 @@
-// 后端契约（与 backend/app/main.py、agents.py 对齐）
+/** 与后端 REST/SSE 契约对应的类型（重构后）。 */
 
-export interface AgentInfo {
-  id: string
-  label: string
-  role: string
-  tone: string
+export interface Position {
+  symbol: string;
+  name: string;
+  kind: string;
+  industry: string;
+  shares: number;
+  last: number;
+  market_value: number;
+  cost: number;
+  pnl: number;
+  pnl_pct: number;
 }
 
-export interface RosterMeta {
-  agents: AgentInfo[]
-  max_steps: number
-  disclaimer: string
-  source?: SourceMeta
+export interface Transaction {
+  id: number;
+  date: string;
+  item: string;
+  category: string;
+  amount: number;
 }
 
-/** 数据来源标注（L1 洞察必须带来源） */
-export interface SourceMeta {
-  portfolio: string
-  ledger: string
-  quotes: string
-  seeded: boolean
+export interface DebtItem {
+  name: string;
+  monthly: number;
+  balance: number;
+  rate: number;
 }
 
-/** 跨会话运行历史（后端 GET /api/history） */
-export interface HistoryRun {
-  id: number
-  thread_id: string
-  question: string
-  answer: string
-  level: string
-  route: string
-  route_reason: string
-  llm_calls: number
-  llm_fallbacks: number
-  created_at: string
-  trace?: unknown[]
+export interface RiskFlag {
+  level: string;
+  code: string;
+  text: string;
 }
 
-export interface HealthMeta {
-  ok: boolean
-  llm_configured: boolean
-  model: string
-  endpoint: string
+export interface EmergencyInfo {
+  cash: number;
+  essential_monthly: number;
+  essential_categories: string[];
+  months_covered: number;
+  target_months: number;
+  ok: boolean;
 }
 
-export type EventPhase = 'start' | 'done'
-
-/** 后端逐事件推送的"某 agent 在干活"过程事件 */
-export interface AgentProcessEvent {
-  type: 'event'
-  agent: string
-  label?: string
-  phase: EventPhase
-  detail?: string
-  artifact?: unknown
+export interface DashboardData {
+  positions: Position[];
+  totals: {
+    total_market_value: number;
+    total_cost: number;
+    total_pnl: number;
+    total_pnl_pct: number;
+  };
+  concentration: {
+    threshold_pct: number;
+    by_asset: { name: string; kind: string; pct: number }[];
+    by_industry: { industry: string; pct: number }[];
+  };
+  cashflow: {
+    month: string;
+    income: number;
+    expense: number;
+    net: number;
+    savings_rate: number;
+    by_category: { category: string; amount: number }[];
+  };
+  subscriptions: {
+    items: { name: string; monthly: number; note: string }[];
+    monthly_total: number;
+    annual_total: number;
+  };
+  debts: { items: DebtItem[]; monthly_total: number; dti_pct: number };
+  emergency: EmergencyInfo;
+  flags: RiskFlag[];
+  transactions: Transaction[];
+  source: { portfolio: string; ledger: string; quotes: string; seeded: boolean };
 }
 
-export interface FinalMeta {
-  answer: string
-  level: string
-  route: string
-  route_reason: string
-  llm_calls: number
-  llm_fallbacks: number
+export interface RunRecord {
+  id: number;
+  thread_id: string;
+  question: string;
+  answer: string;
+  level: string;
+  flags: RiskFlag[];
+  created_at: string;
 }
 
-export interface StreamError {
-  type: 'error'
-  message: string
+export interface SchedulerStatus {
+  enabled: boolean;
+  report_time: string;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  last_error: string | null;
+  generated: number;
 }
 
-/** HITL 人审闸门：L2 建议级交付前等用户批准/扣留 */
-export interface ConfirmPayload {
-  ckpt_id: string
-  thread_id: string
-  level: string
-  flags: { level: string; code: string; text: string }[]
-  preview: string
-  question?: string
+export interface BootstrapData {
+  settings: Record<string, string>;
+  scheduler: SchedulerStatus;
+  health: { llm_configured: boolean; model: string };
+  source: DashboardData["source"];
 }
 
-/** 后端 SSE 可能推送的全部事件 */
-export type StreamEvent =
-  | { type: 'start'; question: string }
-  | AgentProcessEvent
-  | { type: 'final'; answer: string; level: string; route: string; route_reason: string; llm_calls: number; llm_fallbacks: number }
-  | ({ type: 'confirm_required' } & ConfirmPayload)
-  | { type: 'resume_started'; ckpt_id: string; approved: boolean }
-  | StreamError
-  | { type: 'done' }
+export interface AnswerMeta {
+  answer: string;
+  level: string;
+  route: string;
+  route_reason: string;
+  metrics: Record<string, number>;
+  flags: RiskFlag[];
+  llm: "llm" | "template";
+}
 
-export type AgentPhase = 'idle' | 'running' | 'done'
+export type AskEvent =
+  | { type: "start"; question: string }
+  | { type: "step"; id: string; label: string; detail: string; phase: string }
+  | { type: "text"; delta: string }
+  | {
+      type: "final";
+      answer: string;
+      level: string;
+      route: string;
+      route_reason: string;
+      metrics: Record<string, number>;
+      flags: RiskFlag[];
+      llm: "llm" | "template";
+    }
+  | { type: "error"; message: string }
+  | { type: "done" };

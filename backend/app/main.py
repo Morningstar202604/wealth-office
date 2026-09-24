@@ -1,7 +1,7 @@
-"""FastAPI 入口：SSE 流式输出 + 组合库/历史 API + 静态前端托管。
+"""FastAPI 入口：REST + SSE 流式问答 + 最小鉴权 + 静态前端托管。
 
-前端通过 POST /api/ask 建立 SSE 流，逐个事件看到"哪位 Agent 在干活"。
-每轮问答落 `runs` 表 → 跨会话可回放（审计链）。
+鉴权：设置 API_TOKEN 后，所有 /api/* 需带 `Authorization: Bearer <口令>`
+或查询参数 `?token=<口令>`；未设置则仅限本机/内网使用。
 """
 
 from __future__ import annotations
@@ -14,16 +14,13 @@ import uuid
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import db
-from .agents import DISCLAIMER, ROSTER
-from .graph import MAX_STEPS, get_graph, init_graph
-from .llm import get_llm
-from .tools.data_client import DATA, get_portfolio_async
+from . import analysis, db, llm, scheduler, service
+from .quotes import invalidate_quotes_cache
 
 log = logging.getLogger(__name__)
 
@@ -34,22 +31,18 @@ FRONTEND_DIST = PROJECT_DIR / "frontend" / "dist"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # 图 + 持久化 checkpointer 必须在事件循环里 await 构建
-    await init_graph()
-    from . import scheduler
-
-    scheduler.start()
+    await db.init_db()
+    await scheduler.start()
     yield
     await scheduler.stop()
+    await llm.aclose()
+    await db.close_db()
 
 
-app = FastAPI(title="随身理财公司 · MVP", version="0.1.0", lifespan=lifespan)
-# 同域托管时不需要 CORS；仅放开 Vite 开发源（前端 dist 构建后免跨域）。
-_dev_origins = {
-    "http://127.0.0.1:5199",
-    "http://localhost:5199",
-}
-if os.getenv("CORS_ALLOW_ALL") == "1":  # 仅调试用：显式 opt-in 才放开 *
+app = FastAPI(title="随身理财公司", version="1.0.0", lifespan=lifespan)
+
+_dev_origins = {"http://127.0.0.1:5199", "http://localhost:5199"}
+if os.getenv("CORS_ALLOW_ALL") == "1":  # 仅调试用
     _dev_origins = None
 app.add_middleware(
     CORSMiddleware,
@@ -59,41 +52,204 @@ app.add_middleware(
 )
 
 
-@app.middleware("http")
-async def asset_cache_headers(request, call_next):
-    """缓存策略：index.html 永不缓存（发版即生效）；带内容哈希的 assets 长缓存。"""
-    response = await call_next(request)
-    if request.url.path.startswith("/assets/"):
-        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-    return response
+# ---------------------------------------------------------------------------
+# 最小鉴权：API_TOKEN 未设置 = 开放（仅限本机/内网）；设置后所有 /api/* 需带口令
+# ---------------------------------------------------------------------------
 
+@app.middleware("http")
+async def api_auth(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api/") and path != "/api/health":
+        key = os.getenv("API_TOKEN", "").strip()
+        if key:
+            token = request.query_params.get("token", "")
+            header = request.headers.get("authorization", "")
+            if token != key and header != f"Bearer {key}":
+                return JSONResponse({"error": "需要访问口令"}, status_code=401)
+    return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
+# 健康 / 引导 / 仪表盘
+# ---------------------------------------------------------------------------
+
+@app.get("/api/health")
+async def health() -> dict:
+    return {
+        "ok": True,
+        "llm_configured": llm.llm_available(),
+        "model": os.getenv("LLM_MODEL", ""),
+    }
+
+
+@app.get("/api/bootstrap")
+async def bootstrap() -> dict:
+    settings = await db.get_settings()
+    return {
+        "settings": settings,
+        "scheduler": scheduler.status(),
+        "health": {
+            "llm_configured": llm.llm_available(),
+            "model": os.getenv("LLM_MODEL", ""),
+        },
+        "source": (await analysis.collect_dashboard())["source"],
+    }
+
+
+@app.get("/api/dashboard")
+async def dashboard() -> dict:
+    return await analysis.collect_dashboard()
+
+
+# ---------------------------------------------------------------------------
+# 数据录入（持仓 / 流水 / 负债）
+# ---------------------------------------------------------------------------
+
+@app.post("/api/positions")
+async def create_position(payload: dict) -> dict:
+    try:
+        out = await db.add_position(payload or {})
+    except Exception as exc:  # noqa: BLE001 — 坏输入回 400
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    await invalidate_quotes_cache()
+    return out
+
+
+@app.delete("/api/positions/{symbol}")
+async def remove_position(symbol: str) -> dict:
+    out = await db.delete_position(symbol)
+    await invalidate_quotes_cache()
+    return out
+
+
+@app.post("/api/transactions")
+async def create_transaction(payload: dict) -> dict:
+    date = str(payload.get("date") or "").strip()
+    item = str(payload.get("item") or "").strip()
+    category = str(payload.get("category") or "其他").strip() or "其他"
+    amount = float(payload.get("amount", 0) or 0)
+    if not date or not item or amount == 0:
+        return JSONResponse({"error": "日期、名称与金额（不为 0）必填"}, status_code=400)
+    try:
+        return await db.add_transaction(date, item, category, amount)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.delete("/api/transactions/{tx_id}")
+async def remove_transaction(tx_id: int) -> dict:
+    return await db.delete_transaction(tx_id)
+
+
+@app.post("/api/debts")
+async def create_debt(payload: dict) -> dict:
+    try:
+        out = await db.add_debt(payload or {})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return out
+
+
+@app.delete("/api/debts/{name}")
+async def remove_debt(name: str) -> dict:
+    return await db.delete_debt(name)
+
+
+@app.post("/api/portfolio/reset")
+async def reset_portfolio() -> dict:
+    out = await db.reset_to_seed()
+    await invalidate_quotes_cache()
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 设置
+# ---------------------------------------------------------------------------
+
+NUMERIC_KEYS = ("monthly_income", "emergency_target_months")
+QUOTE_MODES = ("auto", "snapshot", "eastmoney")
+
+
+@app.get("/api/settings")
+async def get_settings() -> dict:
+    return {"settings": await db.get_settings(), "scheduler": scheduler.status()}
+
+
+@app.put("/api/settings")
+async def put_settings(payload: dict) -> dict:
+    updates = (payload or {}).get("settings")
+    if not isinstance(updates, dict) or not updates:
+        return JSONResponse({"error": "settings 对象必填"}, status_code=400)
+
+    applied: dict[str, str] = {}
+    errors: list[str] = []
+    for key, raw in updates.items():
+        if key in NUMERIC_KEYS:
+            try:
+                v = float(raw)
+                if v < 0:
+                    errors.append(f"{key} 不能为负数")
+                    continue
+                applied[key] = str(int(v)) if float(v).is_integer() else str(v)
+            except (TypeError, ValueError):
+                errors.append(f"{key} 的值不合法：{raw!r}")
+        elif key == "quote_source_mode":
+            if raw not in QUOTE_MODES:
+                errors.append(f"行情源只能是 {'/'.join(QUOTE_MODES)}")
+                continue
+            applied[key] = raw
+        elif key == "report_time":
+            import re
+
+            if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", str(raw).strip()):
+                errors.append("晨报时间需为 HH:MM（24 小时制）")
+                continue
+            applied[key] = str(raw).strip()
+        elif key == "essential_categories":
+            cats = [c for c in str(raw).split(",") if c.strip()]
+            if not cats:
+                errors.append("必要支出类别不能为空")
+                continue
+            applied[key] = ",".join(cats)
+        else:
+            errors.append(f"未知配置项：{key}")
+
+    for k, v in applied.items():
+        await db.set_setting(k, v)
+    if "quote_source_mode" in applied:
+        await invalidate_quotes_cache()
+    if "report_time" in applied:
+        await scheduler.notify_settings_changed()
+    return {
+        "ok": True,
+        "applied": applied,
+        "errors": errors,
+        "settings": await db.get_settings(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 问答：SSE 流式
+# ---------------------------------------------------------------------------
 
 def sse(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
 
-async def _sse_run(first: dict, runner) -> StreamingResponse:
-    """ask/resume 共用 SSE 脚手架。
-
-    `runner(emit, put, trace)`：emit 推事件流并记 trace；put 推 confirm/final/error。
-    断连时 GeneratorExit 只 cancel task，绝不再 yield。
-    """
+async def _sse_stream(first: dict, runner) -> StreamingResponse:
+    """把 runner(emit, put) 产生的事件转成 SSE；断连时取消任务，不继续 yield。"""
 
     async def event_stream():
         queue: asyncio.Queue = asyncio.Queue()
-        trace_events: list[dict] = []
 
         async def emit(event: dict) -> None:
-            trace_events.append(event)
             await queue.put({"type": "event", **event})
 
         async def run() -> None:
             try:
-                await runner(emit, queue.put, trace_events)
+                await runner(emit)
             except Exception as exc:  # noqa: BLE001 — 让前端看到真实错误
-                await queue.put(
-                    {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
-                )
+                await queue.put({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
             finally:
                 await queue.put(None)
 
@@ -119,361 +275,72 @@ async def _sse_run(first: dict, runner) -> StreamingResponse:
     )
 
 
-@app.get("/api/health")
-async def health() -> dict:
-    llm = get_llm()
-    return {
-        "ok": True,
-        "llm_configured": llm is not None,
-        "model": os.getenv("LLM_MODEL", ""),
-        "endpoint": os.getenv("LLM_BASE_URL", ""),
-    }
-
-
-@app.get("/api/roster")
-async def roster() -> dict:
-    return {
-        "agents": ROSTER,
-        "max_steps": MAX_STEPS,
-        "disclaimer": DISCLAIMER,
-        "source": DATA.source(),
-    }
-
-
-# ---------------------------------------------------------------------------
-# 组合库（真实数据源）：读写用户自己的持仓 / 账本 / 负债
-# ---------------------------------------------------------------------------
-
-
-@app.get("/api/portfolio")
-async def portfolio() -> dict:
-    # 读路径不 invalidate（TTL 缓存才有效）；持仓价与 agent 同源走 DATA 实时取数
-    pf = await get_portfolio_async()
-    return {
-        "positions": pf["positions"],
-        "totals": {
-            "total_market_value": pf["total_market_value"],
-            "total_cost": pf["total_cost"],
-            "total_pnl": pf["total_pnl"],
-            "total_pnl_pct": pf["total_pnl_pct"],
-        },
-        "transactions": db.list_transactions(),
-        "subscriptions": db.list_subscriptions(),
-        "debts": db.list_debts(),
-        "settings": db.get_settings(),
-        "source": pf["source"],
-    }
-
-
-@app.put("/api/portfolio/positions")
-async def put_positions(payload: dict) -> dict:
-    rows = (payload or {}).get("positions") or []
-    if not isinstance(rows, list):
-        return JSONResponse({"error": "positions must be a list"}, status_code=400)
-    try:
-        out = db.replace_positions(rows)
-    except Exception as exc:  # noqa: BLE001 — 坏输入回 400，不 500
-        return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=400)
-    DATA.invalidate()
-    return out
-
-
-@app.post("/api/portfolio/transactions")
-async def post_transaction(payload: dict) -> dict:
-    try:
-        out = db.add_transaction(
-            str(payload.get("day", "")).strip(),
-            str(payload.get("item", "")).strip(),
-            str(payload.get("category", "其他")).strip() or "其他",
-            float(payload.get("amount", 0) or 0),
-        )
-        DATA.invalidate()
-        return out
-    except Exception as exc:
-        return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=400)
-
-
-@app.delete("/api/portfolio/transactions/{tx_id}")
-async def delete_transaction(tx_id: int) -> dict:
-    out = db.delete_transaction(tx_id)
-    DATA.invalidate()
-    return out
-
-
-@app.put("/api/portfolio/debts")
-async def put_debts(payload: dict) -> dict:
-    rows = (payload or {}).get("debts") or []
-    out = db.replace_debts(rows if isinstance(rows, list) else [])
-    DATA.invalidate()
-    return out
-
-
-@app.post("/api/portfolio/reset")
-async def reset_portfolio() -> dict:
-    out = db.reset_to_seed()
-    DATA.invalidate()
-    return out
-
-
-# ---------------------------------------------------------------------------
-# 运行历史（跨会话持久化 / 审计链）
-# ---------------------------------------------------------------------------
-
-
-@app.get("/api/history")
-async def history(thread_id: str | None = None, limit: int = 50) -> dict:
-    return {"runs": db.list_runs(thread_id, limit)}
-
-
-# ---------------------------------------------------------------------------
-# 问答：SSE 流式
-# ---------------------------------------------------------------------------
-
-
 @app.post("/api/ask")
 async def ask(payload: dict):
     question = ((payload or {}).get("question") or "").strip()
-    # thread_id 只用于历史归档（runs 表）；checkpointer 用**每轮独立**的 id，
-    # 否则同一 thread 的旧 checkpoint 会把上一轮的 market_view/answer 残留进这一轮。
-    thread_id = ((payload or {}).get("thread_id") or "").strip() or uuid.uuid4().hex
-    ckpt_id = uuid.uuid4().hex
     if not question:
         return JSONResponse({"error": "question required"}, status_code=400)
+    thread_id = ((payload or {}).get("thread_id") or "").strip() or uuid.uuid4().hex
 
-    async def runner(emit, put, trace) -> None:
-        result = await get_graph().ainvoke(
-            {
-                "question": question,
-                "trace": [],
-                "step_count": 0,
-                "llm_calls": 0,
-                "llm_fallbacks": 0,
-            },
-            {
-                "configurable": {
-                    "emit": emit,
-                    "thread_id": ckpt_id,
-                    "hitl": True,
-                },
-                "recursion_limit": MAX_STEPS,
-            },
-        )
-        # 人审闸门：L2 建议级会在 finalize 里 interrupt，图在此暂停等用户决策
-        interrupts = result.get("__interrupt__") or []
-        if interrupts:
-            info = interrupts[0]
-            info = (
-                info.get("value")
-                if isinstance(info, dict)
-                else getattr(info, "value", info)
-            )
-            extra = dict(info) if isinstance(info, dict) else {"preview": str(info)}
-            await put(
-                {
-                    "type": "confirm_required",
-                    "ckpt_id": ckpt_id,
-                    "thread_id": thread_id,
-                    "question": question,
-                    **extra,
-                }
-            )
-            return  # 不落库：等 /api/resume 续跑完成后再归档
-        try:  # 落库失败绝不能打断交付
-            db.save_run(
+    async def runner(emit) -> None:
+        result = await service.run_question(question, emit)
+        try:
+            await db.save_run(
                 thread_id=thread_id,
                 question=question,
-                answer=result.get("answer", ""),
-                level=result.get("answer_level", ""),
-                route=result.get("route", ""),
-                route_reason=result.get("route_reason", ""),
-                llm_calls=result.get("llm_calls", 0),
-                llm_fallbacks=result.get("llm_fallbacks", 0),
-                trace=trace,
+                answer=result["answer"],
+                level=result["level"],
+                flags=result["flags"],
             )
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 — 落库失败不打断交付
             log.exception("save_run failed")
-        await put(
-            {
-                "type": "final",
-                "answer": result.get("answer", ""),
-                "level": result.get("answer_level", ""),
-                "route": result.get("route", ""),
-                "route_reason": result.get("route_reason", ""),
-                "llm_calls": result.get("llm_calls", 0),
-                "llm_fallbacks": result.get("llm_fallbacks", 0),
-            }
-        )
+        await emit({
+            "type": "final",
+            "answer": result["answer"],
+            "level": result["level"],
+            "route": result["route"],
+            "route_reason": result["route_reason"],
+            "metrics": result["metrics"],
+            "flags": result["flags"],
+            "llm": result["llm"],
+        })
 
-    return await _sse_run({"type": "start", "question": question}, runner)
-
-
-@app.post("/api/resume")
-async def resume(payload: dict):
-    """人审决策后续跑： approved=True 交付建议级汇报；False 交付"已扣留"文案。两者都归档。"""
-    ckpt_id = str((payload or {}).get("ckpt_id") or "").strip()
-    thread_id = str((payload or {}).get("thread_id") or "").strip() or ckpt_id
-    approved = bool((payload or {}).get("approved"))
-    if not ckpt_id:
-        return JSONResponse({"error": "ckpt_id required"}, status_code=400)
-
-    async def runner(emit, put, trace) -> None:
-        from langgraph.types import Command
-
-        result = await get_graph().ainvoke(
-            Command(resume={"approved": approved}),
-            {
-                "configurable": {
-                    "emit": emit,
-                    "thread_id": ckpt_id,
-                    "hitl": True,
-                },
-                "recursion_limit": MAX_STEPS,
-            },
-        )
-        try:  # 落库失败绝不能打断交付
-            db.save_run(
-                thread_id=thread_id,
-                question=result.get("question", ""),
-                answer=result.get("answer", ""),
-                level=result.get("answer_level", ""),
-                route=result.get("route", ""),
-                route_reason=result.get("route_reason", ""),
-                llm_calls=result.get("llm_calls", 0),
-                llm_fallbacks=result.get("llm_fallbacks", 0),
-                trace=trace,
-            )
-        except Exception:  # noqa: BLE001
-            log.exception("save_run failed")
-        await put(
-            {
-                "type": "final",
-                "answer": result.get("answer", ""),
-                "level": result.get("answer_level", ""),
-                "route": result.get("route", ""),
-                "route_reason": result.get("route_reason", ""),
-                "llm_calls": result.get("llm_calls", 0),
-                "llm_fallbacks": result.get("llm_fallbacks", 0),
-            }
-        )
-
-    return await _sse_run(
-        {"type": "resume_started", "ckpt_id": ckpt_id, "approved": approved},
-        runner,
-    )
+    return await _sse_stream({"type": "start", "question": question}, runner)
 
 
 # ---------------------------------------------------------------------------
-# 定时晨报（M2）：后台调度 + 手动触发 + 查询
+# 历史 / 晨报
 # ---------------------------------------------------------------------------
 
-
-@app.post("/api/reports/generate")
-async def generate_report_now() -> dict:
-    from . import scheduler
-
-    try:
-        result = await scheduler.generate_report()
-    except Exception as exc:  # noqa: BLE001 — 手动触发失败要给前端可读错误
-        scheduler._state["last_error"] = f"{type(exc).__name__}: {exc}"
-        return JSONResponse(
-            {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
-            status_code=500,
-        )
-    return {
-        "ok": True,
-        "answer": result.get("answer", ""),
-        "level": result.get("answer_level", ""),
-        "route": result.get("route", ""),
-    }
+@app.get("/api/history")
+async def history(thread_id: str | None = None, limit: int = 50) -> dict:
+    return {"runs": await db.list_runs(thread_id, limit)}
 
 
 @app.get("/api/reports")
 async def reports(limit: int = 20) -> dict:
-    return {"reports": db.list_runs("cron", limit)}
+    return {"reports": await db.list_runs("cron", limit)}
+
+
+@app.post("/api/reports/generate")
+async def generate_report_now() -> dict:
+    try:
+        result = await scheduler.generate_report()
+    except Exception as exc:  # noqa: BLE001 — 手动触发失败要给可读错误
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return {"ok": True, "answer": result["answer"], "level": result["level"]}
 
 
 @app.get("/api/scheduler")
 async def scheduler_status() -> dict:
-    from . import scheduler
-
     return scheduler.status()
 
 
 # ---------------------------------------------------------------------------
-# 设置：前端可视化调整后端配置（账本假设 / 晨报周期 / 行情源）
+# 静态前端托管（同域单端口）
 # ---------------------------------------------------------------------------
 
-SETTING_KEYS = {
-    "monthly_income": float,
-    "emergency_target_months": float,
-    "report_interval_minutes": float,
-    "essential_categories": str,
-    "quote_source_mode": str,
-}
-QUOTE_MODES = ("auto", "snapshot", "yfinance", "eastmoney")
-
-
-@app.get("/api/settings")
-async def get_settings_all() -> dict:
-    from . import scheduler
-
-    return {
-        "settings": db.get_settings(),
-        "scheduler": scheduler.status(),
-        "health": await health(),
-        "source": DATA.source(),
-    }
-
-
-@app.put("/api/settings")
-async def put_settings(payload: dict) -> dict:
-    updates = (payload or {}).get("settings")
-    if not isinstance(updates, dict) or not updates:
-        return JSONResponse({"error": "settings object required"}, status_code=400)
-
-    applied: dict[str, str] = {}
-    errors: list[str] = []
-    for key, raw in updates.items():
-        if key not in SETTING_KEYS:
-            errors.append(f"未知配置项：{key}")
-            continue
-        try:
-            if SETTING_KEYS[key] is float:
-                v = float(raw)
-                if key == "report_interval_minutes" and v < 1:
-                    errors.append("晨报周期不能小于 1 分钟")
-                    continue
-                if v < 0:
-                    errors.append(f"{key} 不能为负数")
-                    continue
-                applied[key] = str(int(v)) if float(v).is_integer() else str(v)
-            else:
-                sval = str(raw).strip()
-                if key == "quote_source_mode" and sval not in QUOTE_MODES:
-                    errors.append(f"行情源只能是 {'/'.join(QUOTE_MODES)}")
-                    continue
-                applied[key] = sval
-        except (TypeError, ValueError):
-            errors.append(f"{key} 的值不合法：{raw!r}")
-
-    for k, v in applied.items():
-        db.set_setting(k, v)
-    DATA.invalidate()
-    if "report_interval_minutes" in applied:
-        from . import scheduler
-
-        scheduler.notify_settings_changed()
-    return {
-        "ok": True,
-        "applied": applied,
-        "errors": errors,
-        "settings": db.get_settings(),
-    }
-
-
-# 前端构建产物：若已 build 就直接托管（单端口，免跨域）
 if FRONTEND_DIST.is_dir():
-    # index.html 显式 no-store：浏览器每次都拿最新入口，避免"改了代码用户刷新却没变化"
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:
         return FileResponse(
@@ -483,16 +350,6 @@ if FRONTEND_DIST.is_dir():
 
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="web")
 else:
-
-    @app.get("/")
+    @app.get("/", include_in_schema=False)
     async def placeholder() -> dict:
-        return {
-            "message": "前端尚未构建。执行：cd frontend && npm install && npm run build",
-            "api": [
-                "/api/health",
-                "/api/roster",
-                "/api/portfolio",
-                "/api/history",
-                "POST /api/ask",
-            ],
-        }
+        return {"message": "前端未构建：cd frontend && npm install && npm run build"}

@@ -1,62 +1,49 @@
-import { useSyncExternalStore } from 'react'
-import { Database, PanelRight, Settings, Sparkles } from 'lucide-react'
-import * as store from '@/lib/agentStore'
-import { Badge } from './ui/badge'
+import { RefreshCw, Wallet } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { store } from "@/lib/store";
 
-/** 顶栏降噪：只留品牌 + 数据来源徽章；模型/编排等信息移入设置面板。 */
-export function TopBar({
-  onOpenSettings,
-  onToggleWorkbench,
-}: {
-  onOpenSettings?: () => void
-  onToggleWorkbench?: () => void
-}) {
-  const state = useSyncExternalStore(store.subscribe, store.getState)
-  const src = state.source
+/** 顶栏：品牌 + 数据来源徽章 + 刷新。安静、不暴露工程细节。 */
+export function TopBar({ onOpenSettings }: { onOpenSettings?: () => void }) {
+  const { dashboard, bootstrap } = store.useApp();
+  const quotesLabel = dashboard?.source.quotes ?? bootstrap?.source.quotes;
 
   return (
-    <header className="glass sticky top-0 z-10 flex items-center justify-between border-b border-border px-4 py-3">
-      <div className="flex items-center gap-3">
+    <header className="glass sticky top-0 z-10 flex items-center justify-between border-b border-border px-4 py-2.5">
+      <div className="flex items-center gap-2.5">
         <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
-          <Sparkles className="h-5 w-5" />
+          <Wallet style={{ width: 18, height: 18 }} />
         </div>
         <div>
-          <h1 className="text-sm font-semibold leading-tight">随身理财公司</h1>
-          <p className="text-[11px] text-muted-foreground">多智能体个人财富管理</p>
+          <div className="text-sm font-bold leading-tight">随身理财</div>
+          {quotesLabel ? (
+            <div className="text-[11px] text-muted-foreground leading-tight">{quotesLabel}</div>
+          ) : null}
         </div>
       </div>
-      <div className="flex items-center gap-1.5">
-        {src && (
-          <Badge
-            variant="outline"
-            className="cursor-default"
-            title={`组合：${src.portfolio} · 账本：${src.ledger} · 行情：${src.quotes}`}
-          >
-            <Database className="mr-1 h-3 w-3" />
-            {src.seeded ? '示例数据' : '你的数据'}
+      <div className="flex items-center gap-2">
+        {dashboard?.source.seeded === false && (
+          <Badge variant="secondary" className="hidden sm:inline-flex">
+            真实数据
           </Badge>
         )}
-        {onToggleWorkbench && (
-          <button
-            type="button"
-            onClick={onToggleWorkbench}
-            title="打开数据工作台"
-            className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground lg:hidden"
-          >
-            <PanelRight className="h-4 w-4" />
-          </button>
-        )}
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="刷新数据"
+          onClick={() => {
+            void store.refreshDashboard();
+            void store.refreshBootstrap();
+          }}
+        >
+          <RefreshCw className="w-4 h-4" />
+        </Button>
         {onOpenSettings && (
-          <button
-            type="button"
-            onClick={onOpenSettings}
-            title="设置"
-            className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          >
-            <Settings className="h-4 w-4" />
-          </button>
+          <Button variant="ghost" size="icon" aria-label="设置" onClick={onOpenSettings}>
+            <span className="text-lg leading-none">⚙</span>
+          </Button>
         )}
       </div>
     </header>
-  )
+  );
 }
