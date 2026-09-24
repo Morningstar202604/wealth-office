@@ -25,7 +25,7 @@ export function SummaryBlock({ meta }: { meta: AnswerMeta }) {
       <div className="flex items-center gap-2">
         <Badge variant={meta.level === "L2 建议" ? "warn" : "ok"}>{meta.level}</Badge>
         <span className="text-xs text-muted-foreground">
-          {meta.llm === "llm" ? "智能问答" : "本地规则引擎"}
+          {meta.llm === "llm" ? "智能问答" : "基于你的数据计算"}
         </span>
       </div>
       {chips.length > 0 && (

@@ -159,7 +159,7 @@ export function SettingsView() {
 
       <Section title="系统信息" icon={<Sparkles className="w-4 h-4 text-muted-foreground" />}>
         <div className="space-y-1 text-xs text-muted-foreground">
-          <div className="flex justify-between"><span>模型</span><span>{bootstrap.health.llm_configured ? bootstrap.health.model : "未配置（使用本地规则引擎）"}</span></div>
+          <div className="flex justify-between"><span>模型</span><span>{bootstrap.health.llm_configured ? bootstrap.health.model : "未配置（当前用内置分析出答案）"}</span></div>
           <div className="flex justify-between"><span>组合数据</span><span>{bootstrap.source.portfolio}</span></div>
           <div className="flex justify-between"><span>账本数据</span><span>{bootstrap.source.ledger}</span></div>
         </div>
