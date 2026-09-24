@@ -24,7 +24,7 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <Card className="p-4">
+    <Card className="p-[var(--card-pad)]">
       <div className="flex items-center justify-between mb-3">
         <div className="text-sm font-medium">{title}</div>
         {badge}

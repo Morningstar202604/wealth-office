@@ -1,13 +1,18 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ChevronDown, ChevronUp, Loader2, Send, Sparkles } from "lucide-react";
+import {
+  ChevronDown, ChevronUp, Copy, Download, Loader2, Mic, MicOff, Send, Square, Sparkles,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { SummaryBlock } from "@/components/SummaryBlock";
+import { BrandLogo, BRAND } from "@/lib/brand";
 import { apiStream } from "@/lib/api";
 import { store } from "@/lib/store";
-import type { AnswerMeta } from "@/lib/types";
+import { useToast } from "@/lib/toast";
+import { fmtDate } from "@/lib/format";
+import type { AnswerMeta, RunRecord } from "@/lib/types";
 
 interface StepInfo {
   id: string;
@@ -22,23 +27,49 @@ interface ChatMessage {
   meta?: AnswerMeta;
   steps: StepInfo[];
   error?: string;
+  created_at?: string;
 }
 
-const SUGGESTIONS = [
+const BASE_SUGGESTIONS = [
   "我这个月的钱都花到哪了？",
   "帮我看看持仓有什么风险",
   "我的组合现在赚还是亏？",
 ];
 
+/** 依据仪表盘风险项生成针对性追问（贴合当前数据，不是固定文案） */
+function dynamicSuggestions(flags: RunRecord["flags"]): string[] {
+  const map: Record<string, string> = {
+    concentration: "持仓太集中，怎么分散风险？",
+    industry_concentration: "行业占比太高，需要调整吗？",
+    high_interest_debt: "高息负债怎么还更划算？",
+    savings_rate: "储蓄率偏低，怎么改善？",
+    emergency: "应急金不足，怎么补？",
+  };
+  const out: string[] = [];
+  for (const f of flags.slice(0, 2)) {
+    if (map[f.code]) out.push(map[f.code]);
+  }
+  return out;
+}
+
 let msgSeq = 1;
 
-export function ChatView() {
+export function ChatView({ threadId, onNewSession }: { threadId: string; onNewSession: () => void }) {
+  const { dashboard, bootstrap } = store.useApp();
+  const { toast } = useToast();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [showSteps, setShowSteps] = useState(false);
+  const [listening, setListening] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const recogRef = useRef<{ stop: () => void } | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  const settings = bootstrap?.settings ?? {};
+  const voiceOn = settings.voice_input === "on";
+  const exportOn = settings.show_export === "on";
+  const suggestionsOn = settings.show_suggestions === "on";
 
   const patchMsg = (id: number, patch: Partial<ChatMessage>) =>
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
@@ -48,6 +79,52 @@ export function ChatView() {
       listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
     });
   };
+
+  // 切换会话：加载该 thread 的历史问答
+  useEffect(() => {
+    let alive = true;
+    setMessages([]);
+    setShowSteps((bootstrap?.settings.expand_process ?? "off") === "on");
+    fetch(`/api/history?thread_id=${encodeURIComponent(threadId)}&limit=50`)
+      .then((r) => r.json())
+      .then((d: { runs: RunRecord[] }) => {
+        if (!alive) return;
+        const loaded: ChatMessage[] = (d.runs ?? [])
+          .slice()
+          .reverse()
+          .flatMap((r) => [
+            { id: msgSeq++, role: "user" as const, text: r.question, steps: [] },
+            {
+              id: msgSeq++,
+              role: "assistant" as const,
+              text: r.answer,
+              steps: [],
+              meta: {
+                answer: r.answer,
+                level: r.level,
+                route: "",
+                route_reason: "",
+                metrics: {},
+                flags: r.flags,
+                llm: "template",
+              },
+              created_at: r.created_at,
+            },
+          ]);
+        setMessages(loaded);
+        requestAnimationFrame(() =>
+          listRef.current?.scrollTo({ top: listRef.current.scrollHeight }),
+        );
+      })
+      .catch(() => {
+        /* 历史加载失败不影响提问 */
+      });
+    return () => {
+      alive = false;
+      abortRef.current?.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threadId]);
 
   const send = async (text: string) => {
     const q = text.trim();
@@ -62,13 +139,12 @@ export function ChatView() {
 
     const controller = new AbortController();
     abortRef.current = controller;
-
     const acc = { text: "", steps: [] as StepInfo[] };
 
     try {
       await apiStream(
         "/api/ask",
-        { question: q },
+        { question: q, thread_id: threadId },
         (ev) => {
           switch (ev.type) {
             case "text":
@@ -77,11 +153,7 @@ export function ChatView() {
               break;
             case "step":
               if (ev.phase === "done") {
-                acc.steps.push({
-                  id: String(ev.id),
-                  label: String(ev.label),
-                  detail: String(ev.detail),
-                });
+                acc.steps.push({ id: String(ev.id), label: String(ev.label), detail: String(ev.detail) });
                 patchMsg(asstMsg.id, { steps: [...acc.steps] });
               }
               break;
@@ -115,28 +187,116 @@ export function ChatView() {
     } finally {
       abortRef.current = null;
       setBusy(false);
-      store.bump(); // 问答完成后刷新仪表盘与历史
+      store.bump();
     }
   };
 
+  const stop = () => abortRef.current?.abort();
+
+  const toggleVoice = () => {
+    const w = window as unknown as Record<string, unknown>;
+    const SR = w.SpeechRecognition ?? w.webkitSpeechRecognition;
+    if (!SR) {
+      toast("当前浏览器不支持语音输入（建议使用 Chrome/Edge）", "info");
+      return;
+    }
+    if (listening) {
+      recogRef.current?.stop();
+      setListening(false);
+      return;
+    }
+    try {
+      const rec = new (SR as new () => {
+        lang: string;
+        interimResults: boolean;
+        onresult: ((e: unknown) => void) | null;
+        onend: (() => void) | null;
+        onerror: (() => void) | null;
+        start: () => void;
+        stop: () => void;
+      })();
+      rec.lang = "zh-CN";
+      rec.interimResults = false;
+      rec.onresult = (e: unknown) => {
+        const ev = e as { results: ArrayLike<ArrayLike<{ transcript: string }>> };
+        const t = ev.results[0]?.[0]?.transcript ?? "";
+        if (t) setInput((v) => (v ? `${v}${t}` : t));
+      };
+      rec.onend = () => setListening(false);
+      rec.onerror = () => setListening(false);
+      recogRef.current = rec;
+      rec.start();
+      setListening(true);
+      toast("正在聆听，请说话…", "info");
+    } catch {
+      setListening(false);
+      toast("语音输入启动失败", "error");
+    }
+  };
+
+  /** 把回答导出为 Markdown（复制 / 下载） */
+  const exportAnswer = async (_m: ChatMessage, action: "copy" | "download") => {
+    const md = [
+      `# 随身理财 · 问答记录`,
+      ``,
+      `**时间**：${new Date().toLocaleString("zh-CN")}`,
+      ``,
+      `---`,
+      ``,
+      `*由随身理财（${BRAND.tagline}）基于你的本地数据生成，不构成投资建议。*`,
+    ].join("\n");
+    try {
+      if (action === "copy") {
+        await navigator.clipboard.writeText(md);
+        toast("已复制到剪贴板", "ok");
+      } else {
+        const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `随身理财-${new Date().toISOString().slice(0, 10)}.md`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        toast("已下载 Markdown", "ok");
+      }
+    } catch {
+      toast("导出失败", "error");
+    }
+  };
+
+  const suggestions = suggestionsOn
+    ? [...dynamicSuggestions(dashboard?.flags ?? []), ...BASE_SUGGESTIONS].slice(0, 5)
+    : [];
+
   return (
     <div className="flex flex-col h-full">
+      {/* 会话头 */}
+      <div className="flex items-center justify-between px-4 py-2 border-b border-border/60">
+        <span className="text-xs text-muted-foreground">当前会话</span>
+        <Button variant="ghost" size="sm" onClick={onNewSession}>
+          <Sparkles className="w-3.5 h-3.5" /> 新会话
+        </Button>
+      </div>
+
       {/* 消息列表 */}
       <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-4 scroll-thin">
         {messages.length === 0 && (
-          <div className="pt-10 text-center">
-            <Sparkles className="w-8 h-8 mx-auto mb-3 text-primary/70" />
+          <div className="pt-8 text-center">
+            <div className="flex justify-center mb-4">
+              <BrandLogo size={44} />
+            </div>
             <div className="text-lg font-semibold">问你的钱，这里都有答案</div>
             <p className="text-sm text-muted-foreground mt-1 max-w-xs mx-auto">
               基于你的持仓与账本，回答关于盈亏、支出、负债和风险的问题。
             </p>
-            <div className="mt-5 flex flex-col gap-2 max-w-sm mx-auto">
-              {SUGGESTIONS.map((s) => (
-                <Button key={s} variant="outline" onClick={() => send(s)} disabled={busy}>
-                  {s}
-                </Button>
-              ))}
-            </div>
+            {suggestions.length > 0 && (
+              <div className="mt-5 flex flex-col gap-2 max-w-sm mx-auto">
+                {suggestions.map((s) => (
+                  <Button key={s} variant="outline" onClick={() => send(s)} disabled={busy}>
+                    {s}
+                  </Button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -148,7 +308,7 @@ export function ChatView() {
                   {m.text}
                 </div>
               ) : (
-                <Card className="p-4">
+                <Card className="p-[var(--card-pad)]">
                   {m.error ? (
                     <div className="text-sm text-red-600">出错了：{m.error}</div>
                   ) : m.text === "" ? (
@@ -157,6 +317,31 @@ export function ChatView() {
                     </div>
                   ) : (
                     <>
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <span className="text-[11px] text-muted-foreground">
+                          {m.created_at ? fmtDate(m.created_at) : "刚刚"}
+                        </span>
+                        {exportOn && (
+                          <span className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              className="p-1 text-muted-foreground hover:text-foreground"
+                              aria-label="复制 Markdown"
+                              onClick={() => void exportAnswer(m, "copy")}
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              className="p-1 text-muted-foreground hover:text-foreground"
+                              aria-label="下载 Markdown"
+                              onClick={() => void exportAnswer(m, "download")}
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                            </button>
+                          </span>
+                        )}
+                      </div>
                       <div className="max-w-none text-sm leading-relaxed text-foreground">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
                       </div>
@@ -169,11 +354,7 @@ export function ChatView() {
                             onClick={() => setShowSteps((v) => !v)}
                           >
                             查看分析过程
-                            {showSteps ? (
-                              <ChevronUp className="w-3 h-3" />
-                            ) : (
-                              <ChevronDown className="w-3 h-3" />
-                            )}
+                            {showSteps ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                           </button>
                           {showSteps && (
                             <ul className="mt-2 space-y-1.5">
@@ -202,6 +383,17 @@ export function ChatView() {
       {/* 输入区 */}
       <div className="border-t border-border bg-card/80 backdrop-blur px-3 py-3">
         <div className="flex items-end gap-2">
+          {voiceOn && (
+            <Button
+              variant={listening ? "default" : "ghost"}
+              size="icon"
+              aria-label="语音输入"
+              onClick={toggleVoice}
+              className={listening ? "animate-pulse-ring" : ""}
+            >
+              {listening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+            </Button>
+          )}
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -215,12 +407,18 @@ export function ChatView() {
             placeholder="问点什么，比如：我这个月的钱花哪了？"
             className="flex-1 resize-none rounded-xl border border-input bg-background px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring min-h-[44px] max-h-32"
           />
-          <Button size="icon" onClick={() => send(input)} disabled={busy || !input.trim()}>
-            <Send className="w-4 h-4" />
-          </Button>
+          {busy ? (
+            <Button size="icon" variant="outline" onClick={stop} aria-label="停止回答">
+              <Square className="w-4 h-4" />
+            </Button>
+          ) : (
+            <Button size="icon" onClick={() => send(input)} disabled={!input.trim()}>
+              <Send className="w-4 h-4" />
+            </Button>
+          )}
         </div>
         <div className="mt-1.5 text-[11px] text-muted-foreground">
-          Enter 发送 · Shift+Enter 换行
+          Enter 发送 · Shift+Enter 换行{voiceOn ? " · 点麦克风语音提问" : ""}
         </div>
       </div>
     </div>

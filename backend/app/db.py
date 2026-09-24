@@ -68,8 +68,20 @@ SEED_SETTINGS = {
     "quote_source_mode": "auto",
     # 定时晨报时间（HH:MM）
     "report_time": "08:00",
+    # ---- 功能开关（设置中心可自定义）----
+    "voice_input": "off",            # 问答语音输入（浏览器支持时）
+    "show_export": "on",             # 回答导出/复制按钮
+    "expand_process": "off",         # 分析过程默认展开
+    "show_suggestions": "on",        # 问答页建议入口
+    "auto_refresh": "off",           # 仪表盘定时自动刷新
+    "auto_refresh_seconds": "300",   # 自动刷新间隔（秒）
+    "compact_numbers": "on",         # 大金额缩写（万/亿）
+    "savings_goal": "20",            # 储蓄率目标（%）
     "data_note": "seed",
 }
+
+# 版本化默认设置：新增键时对已有库补齐默认值
+DEFAULT_SETTINGS = {k: v for k, v in SEED_SETTINGS.items()}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS positions (
@@ -116,6 +128,13 @@ CREATE TABLE IF NOT EXISTS runs (
     created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_runs_thread ON runs(thread_id, id);
+CREATE TABLE IF NOT EXISTS sessions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id  TEXT UNIQUE NOT NULL,
+    title      TEXT NOT NULL DEFAULT '新会话',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -136,6 +155,8 @@ async def init_db() -> None:
     await _db.executescript(SCHEMA)
     if await _count("positions") == 0:
         await _seed_all()
+    await _ensure_defaults()
+    await _migrate_sessions_from_runs()
     await _db.commit()
     _inited = True
 
@@ -187,6 +208,34 @@ async def _seed_all() -> None:
         "INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)",
         list(SEED_SETTINGS.items()),
     )
+
+
+async def _ensure_defaults() -> None:
+    """对已有库补齐新增的设置默认键（版本化迁移）。"""
+    conn = await _conn()
+    await conn.executemany(
+        "INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)",
+        list(DEFAULT_SETTINGS.items()),
+    )
+
+
+async def _migrate_sessions_from_runs() -> None:
+    """历史迁移：已有问答（旧库）按 thread 生成会话，标题取首个问题。"""
+    conn = await _conn()
+    rows = await (await conn.execute(
+        "SELECT r.thread_id, r.question, MIN(r.id) AS first_id"
+        " FROM runs r WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.thread_id = r.thread_id)"
+        " GROUP BY r.thread_id"
+    )).fetchall()
+    if not rows:
+        return
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    for r in rows:
+        await conn.execute(
+            "INSERT OR IGNORE INTO sessions(thread_id,title,created_at,updated_at)"
+            " VALUES(?,?,?,?)",
+            (r["thread_id"], str(r["question"])[:40] or "新会话", now, now),
+        )
 
 
 async def reset_to_seed() -> dict[str, Any]:
@@ -361,6 +410,7 @@ async def save_run(
          json.dumps(flags or [], ensure_ascii=False), created),
     )
     await conn.commit()
+    await upsert_session(thread_id or "default", question)
     return {"ok": True, "id": cur.lastrowid}
 
 
@@ -380,3 +430,106 @@ async def list_runs(thread_id: str | None = None, limit: int = 50) -> list[dict[
         except Exception:
             r["flags"] = []
     return rows
+
+
+# --------------------------------------------------------------------------
+# 会话管理（thread 列表：新建 / 重命名 / 删除）
+# --------------------------------------------------------------------------
+
+async def upsert_session(thread_id: str, title: str) -> dict[str, Any]:
+    """问答落库时同步会话表：标题仍为默认'新会话'时用首个问题覆盖，否则保留自定义；刷新 updated_at。"""
+    conn = await _conn()
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    await conn.execute(
+        "INSERT INTO sessions(thread_id,title,created_at,updated_at) VALUES(?,?,?,?)"
+        " ON CONFLICT(thread_id) DO UPDATE SET"
+        " title=CASE WHEN sessions.title='新会话' THEN excluded.title ELSE sessions.title END,"
+        " updated_at=excluded.updated_at",
+        (thread_id, title[:40] or "新会话", now, now),
+    )
+    await conn.commit()
+    return {"ok": True, "thread_id": thread_id}
+
+
+async def create_session(thread_id: str | None = None, title: str = "新会话") -> dict[str, Any]:
+    conn = await _conn()
+    tid = thread_id or uuid_hex()
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    cur = await conn.execute(
+        "INSERT INTO sessions(thread_id,title,created_at,updated_at) VALUES(?,?,?,?)",
+        (tid, title[:40] or "新会话", now, now),
+    )
+    await conn.commit()
+    return {"ok": True, "id": cur.lastrowid, "thread_id": tid}
+
+
+async def list_sessions() -> list[dict[str, Any]]:
+    rows = await fetch_all(
+        "SELECT id, thread_id, title, created_at, updated_at"
+        " FROM sessions ORDER BY updated_at DESC"
+    )
+    return rows
+
+
+async def rename_session(session_id: int, title: str) -> dict[str, Any]:
+    conn = await _conn()
+    await conn.execute(
+        "UPDATE sessions SET title=?, updated_at=?"
+        " WHERE id=?",
+        (str(title).strip()[:40] or "新会话",
+         datetime.now().astimezone().isoformat(timespec="seconds"),
+         int(session_id)),
+    )
+    await conn.commit()
+    return {"ok": True}
+
+
+async def delete_session(session_id: int) -> dict[str, Any]:
+    """删除会话及其全部问答记录。"""
+    conn = await _conn()
+    row = await (await conn.execute(
+        "SELECT thread_id FROM sessions WHERE id=?", (int(session_id),)
+    )).fetchone()
+    await conn.execute("DELETE FROM sessions WHERE id=?", (int(session_id),))
+    if row:
+        await conn.execute("DELETE FROM runs WHERE thread_id=?", (row["thread_id"],))
+    await conn.commit()
+    return {"ok": True, "deleted": True}
+
+
+def uuid_hex() -> str:
+    import uuid as _uuid
+
+    return _uuid.uuid4().hex
+
+
+# --------------------------------------------------------------------------
+# 数据导出 / 月度趋势
+# --------------------------------------------------------------------------
+
+async def export_data() -> dict[str, Any]:
+    """全量导出（备份）：持仓 / 流水 / 订阅 / 负债 / 设置 / 会话 / 问答。"""
+    return {
+        "version": 2,
+        "exported_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "positions": await list_positions(),
+        "transactions": await list_transactions(),
+        "subscriptions": await list_subscriptions(),
+        "debts": await list_debts(),
+        "settings": await get_settings(),
+        "sessions": await list_sessions(),
+        "runs": await list_runs(limit=1000),
+    }
+
+
+async def monthly_trend(months: int = 6) -> list[dict[str, Any]]:
+    """按自然月聚合流水：收入 / 支出 / 结余（含当前月，最近 N 个月）。"""
+    rows = await fetch_all(
+        "SELECT substr(date,1,7) AS month,"
+        " SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS income,"
+        " SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END) AS expense,"
+        " SUM(amount) AS net"
+        " FROM transactions GROUP BY month ORDER BY month DESC LIMIT ?",
+        (int(months),),
+    )
+    return [dict(r) for r in reversed(rows)]

@@ -33,12 +33,17 @@ export default {
         },
         // 品牌 / 角色强调色
         brand: {
+          DEFAULT: 'hsl(var(--brand))',
           blue: 'hsl(var(--brand-blue))',
           teal: 'hsl(var(--brand-teal))',
           green: 'hsl(var(--brand-green))',
           gold: 'hsl(var(--brand-gold))',
           purple: 'hsl(var(--brand-purple))',
         },
+        // 涨跌语义色
+        up: '#d97706',
+        down: '#059669',
+        danger: '#dc2626',
       },
       borderRadius: {
         lg: 'var(--radius)',

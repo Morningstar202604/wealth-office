@@ -12,10 +12,12 @@ export function PositionsTable({
   rows,
   total,
   className,
+  compact = false,
 }: {
   rows: Position[];
   total?: number;
   className?: string;
+  compact?: boolean;
 }) {
   const [sortKey, setSortKey] = useState<SortKey>("market_value");
   const [desc, setDesc] = useState(true);
@@ -83,9 +85,9 @@ export function PositionsTable({
                   {r.weight.toFixed(1)}%
                 </span>
               </td>
-              <td className="px-2 py-1.5 text-right text-muted-foreground">{fmtMoney(r.last)}</td>
-              <td className="px-2 py-1.5 text-right font-medium">{fmtMoney(r.market_value)}</td>
-              <td className={cn("px-2 py-1.5 text-right", pnlClass(r.pnl))}>{fmtMoney(r.pnl, true)}</td>
+              <td className="px-2 py-1.5 text-right text-muted-foreground">{fmtMoney(r.last, false, compact)}</td>
+              <td className="px-2 py-1.5 text-right font-medium">{fmtMoney(r.market_value, false, compact)}</td>
+              <td className={cn("px-2 py-1.5 text-right", pnlClass(r.pnl))}>{fmtMoney(r.pnl, true, compact)}</td>
               <td className={cn("px-2 py-1.5 text-right", pnlClass(r.pnl))}>{fmtPct(r.pnl_pct, true)}</td>
             </tr>
           ))}

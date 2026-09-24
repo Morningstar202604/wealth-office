@@ -136,3 +136,74 @@ async def test_manual_report(client) -> None:
     body = r.json()
     assert body["ok"] is True
     assert "总市值" in body["answer"]
+
+
+# ---------------------------------------------------------------------------
+# 会话管理 / 导出 / 趋势（新增能力）
+# ---------------------------------------------------------------------------
+
+async def test_sessions_lifecycle(client) -> None:
+    # 新建会话（默认标题）
+    r = await client.post("/api/sessions")
+    assert r.status_code == 200
+    sid = r.json()["id"]
+    tid = r.json()["thread_id"]
+
+    # 问答落库应自动登记会话，且默认标题被首个问题覆盖
+    async with client.stream("POST", "/api/ask", json={"question": "测试问答一", "thread_id": tid}) as resp:
+        await resp.aread()
+    sess = (await client.get("/api/sessions")).json()["sessions"]
+    assert any(s["thread_id"] == tid and s["title"] == "测试问答一" for s in sess)
+
+    # 重命名
+    r = await client.patch(f"/api/sessions/{sid}", json={"title": "改名后的会话"})
+    assert r.status_code == 200
+    sess = (await client.get("/api/sessions")).json()["sessions"]
+    assert any(s["id"] == sid and s["title"] == "改名后的会话" for s in sess)
+
+    # 重命名后的标题在后续问答中保持（自定义标题不覆盖）
+    async with client.stream("POST", "/api/ask", json={"question": "测试问答二", "thread_id": tid}) as resp:
+        await resp.aread()
+    sess = (await client.get("/api/sessions")).json()["sessions"]
+    assert any(s["id"] == sid and s["title"] == "改名后的会话" for s in sess)
+
+    # 删除会话应连带删除该 thread 的问答
+    await client.delete(f"/api/sessions/{sid}")
+    sess = (await client.get("/api/sessions")).json()["sessions"]
+    assert all(s["thread_id"] != tid for s in sess)
+    runs = (await client.get(f"/api/history?thread_id={tid}")).json()["runs"]
+    assert runs == []
+
+
+async def test_settings_new_keys(client) -> None:
+    r = await client.put("/api/settings", json={"settings": {
+        "voice_input": "on",
+        "compact_numbers": "off",
+        "savings_goal": "25",
+        "auto_refresh": "on",
+        "auto_refresh_seconds": "120",
+        "bad_key": "x",
+    }})
+    body = r.json()
+    assert body["errors"] == ["未知配置项：bad_key"]
+    st = body["settings"]
+    assert st["voice_input"] == "on"
+    assert st["savings_goal"] == "25"
+
+    # 越界值被拒绝
+    r = await client.put("/api/settings", json={"settings": {"savings_goal": "200"}})
+    assert r.json()["errors"]
+
+
+async def test_export_and_trend(client) -> None:
+    r = await client.get("/api/export")
+    body = r.json()
+    assert body["version"] == 2
+    assert body["positions"] and body["transactions"] and body["settings"]
+
+    r = await client.get("/api/trend?months=6")
+    body = r.json()
+    assert body["months"]
+    m = body["months"][-1]
+    assert "income" in m and "expense" in m and "net" in m
+    assert m["income"] > 0 and m["expense"] > 0

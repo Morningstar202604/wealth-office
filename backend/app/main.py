@@ -166,8 +166,18 @@ async def reset_portfolio() -> dict:
 # 设置
 # ---------------------------------------------------------------------------
 
-NUMERIC_KEYS = ("monthly_income", "emergency_target_months")
+NUMERIC_KEYS = ("monthly_income", "emergency_target_months", "savings_goal", "auto_refresh_seconds")
 QUOTE_MODES = ("auto", "snapshot", "eastmoney")
+ONOFF_KEYS = (
+    "voice_input", "show_export", "expand_process", "show_suggestions",
+    "auto_refresh", "compact_numbers",
+)
+NUMERIC_RANGES: dict[str, tuple[float, float]] = {
+    "monthly_income": (0, 1e12),
+    "emergency_target_months": (0, 120),
+    "savings_goal": (0, 100),
+    "auto_refresh_seconds": (30, 86400),
+}
 
 
 @app.get("/api/settings")
@@ -187,12 +197,18 @@ async def put_settings(payload: dict) -> dict:
         if key in NUMERIC_KEYS:
             try:
                 v = float(raw)
-                if v < 0:
-                    errors.append(f"{key} 不能为负数")
+                lo, hi = NUMERIC_RANGES[key]
+                if v < lo or v > hi:
+                    errors.append(f"{key} 需在 {lo:g}–{hi:g} 之间")
                     continue
                 applied[key] = str(int(v)) if float(v).is_integer() else str(v)
             except (TypeError, ValueError):
                 errors.append(f"{key} 的值不合法：{raw!r}")
+        elif key in ONOFF_KEYS:
+            if raw not in ("on", "off"):
+                errors.append(f"{key} 只能是 on/off")
+                continue
+            applied[key] = raw
         elif key == "quote_source_mode":
             if raw not in QUOTE_MODES:
                 errors.append(f"行情源只能是 {'/'.join(QUOTE_MODES)}")
@@ -315,6 +331,48 @@ async def ask(payload: dict):
 @app.get("/api/history")
 async def history(thread_id: str | None = None, limit: int = 50) -> dict:
     return {"runs": await db.list_runs(thread_id, limit)}
+
+
+# ---------------------------------------------------------------------------
+# 会话管理（多会话）
+# ---------------------------------------------------------------------------
+
+@app.get("/api/sessions")
+async def sessions() -> dict:
+    return {"sessions": await db.list_sessions()}
+
+
+@app.post("/api/sessions")
+async def create_session(payload: dict | None = None) -> dict:
+    title = str((payload or {}).get("title") or "新会话").strip()
+    return await db.create_session(title=title)
+
+
+@app.patch("/api/sessions/{session_id}")
+async def rename_session(session_id: int, payload: dict) -> dict:
+    title = str(payload.get("title") or "").strip()
+    if not title:
+        return JSONResponse({"error": "标题不能为空"}, status_code=400)
+    return await db.rename_session(session_id, title)
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: int) -> dict:
+    return await db.delete_session(session_id)
+
+
+# ---------------------------------------------------------------------------
+# 数据导出 / 月度趋势
+# ---------------------------------------------------------------------------
+
+@app.get("/api/export")
+async def export_data() -> dict:
+    return await db.export_data()
+
+
+@app.get("/api/trend")
+async def trend(months: int = 6) -> dict:
+    return {"months": await db.monthly_trend(min(months, 24))}
 
 
 @app.get("/api/reports")

@@ -1,4 +1,4 @@
-/** 与后端 REST/SSE 契约对应的类型（重构后）。 */
+/** 与后端 REST/SSE 契约对应的类型。 */
 
 export interface Position {
   symbol: string;
@@ -84,6 +84,21 @@ export interface RunRecord {
   level: string;
   flags: RiskFlag[];
   created_at: string;
+}
+
+export interface SessionItem {
+  id: number;
+  thread_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TrendMonth {
+  month: string;
+  income: number;
+  expense: number;
+  net: number;
 }
 
 export interface SchedulerStatus {

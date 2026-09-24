@@ -1,13 +1,14 @@
-/** 极简全局状态：仪表盘数据 + 历史 + 引导信息，组件通过 useSyncExternalStore 订阅。 */
+/** 极简全局状态：仪表盘 / 引导 / 历史 / 会话。组件通过 useSyncExternalStore 订阅。 */
 
 import { useSyncExternalStore } from "react";
 import { api } from "./api";
-import type { BootstrapData, DashboardData, RunRecord } from "./types";
+import type { BootstrapData, DashboardData, RunRecord, SessionItem } from "./types";
 
 export interface AppState {
   dashboard: DashboardData | null;
   bootstrap: BootstrapData | null;
   history: RunRecord[];
+  sessions: SessionItem[];
   loading: boolean;
   error: string | null;
   refreshTick: number;
@@ -17,6 +18,7 @@ let state: AppState = {
   dashboard: null,
   bootstrap: null,
   history: [],
+  sessions: [],
   loading: false,
   error: null,
   refreshTick: 0,
@@ -66,11 +68,21 @@ async function refreshHistory(): Promise<void> {
   }
 }
 
+async function refreshSessions(): Promise<void> {
+  try {
+    const data = await api<{ sessions: SessionItem[] }>("/api/sessions");
+    setState({ sessions: data.sessions ?? [] });
+  } catch {
+    /* ignore */
+  }
+}
+
 /** 数据发生变更后统一刷新（记账/设置/问答完成时调用） */
 function bump(): void {
   setState({ refreshTick: state.refreshTick + 1 });
   void refreshDashboard();
   void refreshHistory();
+  void refreshSessions();
 }
 
 export function useApp(): AppState {
@@ -82,6 +94,7 @@ export const store = {
   refreshDashboard,
   refreshBootstrap,
   refreshHistory,
+  refreshSessions,
   bump,
   getState,
 };
