@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Download, KeyRound, Newspaper, Palette, RefreshCw, ShieldCheck, SlidersHorizontal, Sparkles,
 } from "lucide-react";
@@ -11,7 +11,9 @@ import { useTheme, BRAND_OPTIONS } from "@/lib/theme";
 import { api, getToken, setToken } from "@/lib/api";
 import { store } from "@/lib/store";
 import { useToast } from "@/lib/toast";
+import { fmtDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import type { RunRecord } from "@/lib/types";
 
 const inputCls =
   "w-full rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring";
@@ -62,10 +64,24 @@ export function SettingsView() {
   const [form, setForm] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [tokenInput, setTokenInput] = useState(getToken());
+  const [reports, setReports] = useState<RunRecord[]>([]);
 
   useEffect(() => {
     if (bootstrap) setForm({ ...bootstrap.settings });
   }, [bootstrap]);
+
+  // 加载最近晨报（生成 / 进入设置页时刷新）
+  const loadReports = useCallback(async () => {
+    try {
+      const d = await api<{ reports: RunRecord[] }>("/api/reports?limit=5");
+      setReports(d.reports ?? []);
+    } catch {
+      /* 晨报历史加载失败不阻塞设置页 */
+    }
+  }, []);
+  useEffect(() => {
+    void loadReports();
+  }, [loadReports]);
 
   if (!bootstrap) {
     return <div className="p-8 text-center text-sm text-muted-foreground">加载中…</div>;
@@ -93,7 +109,28 @@ export function SettingsView() {
   };
 
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
-  const toggle = (k: string) => set(k, form[k] === "on" ? "off" : "on");
+
+  /** 开关类即改即生效（与外观一致，无需点保存按钮）；数值输入仍走底部批量保存。 */
+  const toggle = (k: string) => {
+    const v = form[k] === "on" ? "off" : "on";
+    set(k, v);
+    void (async () => {
+      try {
+        const res = await api<{ ok: boolean; errors: string[] }>("/api/settings", {
+          method: "PUT",
+          body: JSON.stringify({ settings: { [k]: v } }),
+        });
+        if (res.errors.length) {
+          toast(`保存失败：${res.errors.join("；")}`, "error");
+          return;
+        }
+        await store.refreshBootstrap();
+        store.bump();
+      } catch (e) {
+        toast(e instanceof Error ? e.message : String(e), "error");
+      }
+    })();
+  };
 
   const resetSeed = async () => {
     if (!window.confirm("恢复示例数据会覆盖当前的持仓、流水与负债，确定吗？")) return;
@@ -261,8 +298,9 @@ export function SettingsView() {
             onClick={async () => {
               try {
                 const r = await api<{ ok: boolean }>("/api/reports/generate", { method: "POST" });
-                toast(r.ok ? "已生成一份晨报，可在历史中查看" : "生成失败", r.ok ? "ok" : "error");
+                toast(r.ok ? "晨报已生成" : "生成失败", r.ok ? "ok" : "error");
                 store.bump();
+                void loadReports();
               } catch (e) {
                 toast(e instanceof Error ? e.message : String(e), "error");
               }
@@ -275,6 +313,20 @@ export function SettingsView() {
           {sc.enabled ? `下次：${sc.next_run_at ?? "—"}` : "定时任务未启用"}
           {sc.generated > 0 ? ` · 已生成 ${sc.generated} 份` : ""}
         </div>
+        {reports.length > 0 && (
+          <div className="mt-3 space-y-1.5">
+            <div className="text-xs text-muted-foreground">最近晨报</div>
+            {reports.map((r) => (
+              <details key={r.id} className="rounded-lg border border-border bg-card px-2.5 py-2 text-xs">
+                <summary className="flex cursor-pointer items-center justify-between text-muted-foreground">
+                  <span>{fmtDate(r.created_at ?? "")}</span>
+                  <Badge variant={r.level === "L2 建议" ? "warn" : "ok"}>{r.level}</Badge>
+                </summary>
+                <div className="mt-1.5 whitespace-pre-wrap text-foreground">{r.answer}</div>
+              </details>
+            ))}
+          </div>
+        )}
       </Section>
 
       {/* 数据 */}
