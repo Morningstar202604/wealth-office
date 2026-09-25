@@ -160,6 +160,33 @@ async def test_ai_misconfig_falls_back_to_template(client) -> None:
     assert "总市值" in final["answer"]
 
 
+async def test_nl_add_rule_and_fallback(client) -> None:
+    """一句话记账：规则解析直接入账；读不懂时 422 引导；空输入 400。"""
+    r = await client.post("/api/nl-add", json={"text": "昨天打车 32 元"})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["source"] == "rule"
+    assert d["transaction"]["amount"] == -32
+    assert d["transaction"]["category"] == "交通"
+    assert d["transaction"]["item"] == "打车"
+
+    r2 = await client.post("/api/nl-add", json={"text": "工资 8000 已到账"})
+    assert r2.status_code == 200
+    assert r2.json()["transaction"]["amount"] == 8000
+    assert r2.json()["transaction"]["category"] == "收入"
+
+    # 规则拿不到金额 + 测试环境无 AI 配置 → 422 引导
+    r3 = await client.post("/api/nl-add", json={"text": "乱七八糟"})
+    assert r3.status_code == 422
+
+    r4 = await client.post("/api/nl-add", json={"text": "  "})
+    assert r4.status_code == 400
+
+    # 入账后流水可查
+    r5 = (await client.get("/api/dashboard")).json()
+    assert any(t["item"] == "打车" and t["amount"] == -32 for t in r5["transactions"])
+
+
 async def test_budgets_lifecycle(client) -> None:
     """预算：设置本月总预算+分类预算 → 实时使用率计算；非法月份拒绝。"""
     month = datetime.now().astimezone().strftime("%Y-%m")

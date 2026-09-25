@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import AsyncIterator
 
 import httpx
@@ -117,3 +118,38 @@ async def stream_narrate(system: str, user: str, fallback: str) -> AsyncIterator
                 yield fallback, "template"
     except Exception:  # noqa: BLE001 — 流中断整体退回模板
         yield fallback, "template"
+
+
+async def json_complete(system: str, user: str, timeout: float = 20.0) -> dict | None:
+    """非流式单次完成，期望返回 JSON 对象（如结构化解析）。
+
+    未配置 / 端点失败 / 输出无法解析 → None（由调用方决定降级），不冒充结果。
+    """
+    cfg = await _config()
+    if cfg is None:
+        return None
+    try:
+        payload = {
+            "model": cfg["model"],
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.1,
+            "stream": False,
+        }
+        async with httpx.AsyncClient(timeout=timeout) as c:
+            resp = await c.post(
+                f"{cfg['base']}/chat/completions",
+                json=payload,
+                headers={"Authorization": f"Bearer {cfg['key']}"},
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"]
+        m = re.search(r"\{[\s\S]*\}", content)
+        if not m:
+            return None
+        data = json.loads(m.group(0))
+        return data if isinstance(data, dict) else None
+    except Exception:  # noqa: BLE001 — 网络/解析失败统一视为不可用
+        return None

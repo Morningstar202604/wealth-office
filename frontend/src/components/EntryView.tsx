@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { useToast } from "@/lib/toast";
 import { api } from "@/lib/api";
 import { store as appStore } from "@/lib/store";
 import { fmtMoney } from "@/lib/format";
@@ -179,6 +180,69 @@ function TransactionForm({ onDone }: { onDone: () => void }) {
   );
 }
 
+/** 一句话记账：规则解析秒回，复杂句自动升级 AI；成功直接入账。 */
+function NlForm({ onDone }: { onDone: () => void }) {
+  const { toast } = useToast();
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const samples = ["昨天打车 32 元", "工资 8000 已到账", "买了件衣服 299"];
+
+  const submit = async (s?: string) => {
+    const q = (s ?? text).trim();
+    if (!q || busy) return;
+    setBusy(true);
+    try {
+      const r = await api<{ source: string; transaction: { item: string; category: string; amount: number; date: string } }>("/api/nl-add", {
+        method: "POST",
+        body: JSON.stringify({ text: q }),
+      });
+      const t = r.transaction;
+      toast(
+        `已记：${t.category} ${fmtMoney(t.amount, true)}（${t.item} · ${t.date}）${r.source === "ai" ? " · AI 识别" : ""}`,
+        "ok",
+      );
+      setText("");
+      onDone();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mb-3 rounded-xl border border-primary/20 bg-primary/5 p-3">
+      <div className="flex items-center gap-1.5 text-xs font-medium mb-1.5">
+        <Sparkles className="w-3.5 h-3.5 text-primary" />
+        一句话记账
+      </div>
+      <div className="flex gap-2">
+        <input
+          className={inputCls}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && void submit()}
+          placeholder="例如：昨天打车 32 元"
+        />
+        <Button size="sm" onClick={() => void submit()} disabled={busy || !text.trim()}>
+          {busy ? "识别中…" : "记一笔"}
+        </Button>
+      </div>
+      <div className="mt-1.5 flex gap-1.5 flex-wrap">
+        {samples.map((s) => (
+          <button
+            key={s}
+            className="rounded-full bg-background border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:text-primary hover:border-primary/40"
+            onClick={() => void submit(s)}
+          >
+            {s}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function DebtForm({ onDone }: { onDone: () => void }) {
   const [f, setF] = useState({ name: "", monthly: "", balance: "", rate: "" });
   const [err, setErr] = useState("");
@@ -287,6 +351,7 @@ export function EntryView() {
 
       {tab === "transaction" && (
         <Section title="记一笔流水">
+          <NlForm onDone={() => appStore.bump()} />
           <TransactionForm onDone={() => appStore.bump()} />
           {dashboard && dashboard.transactions.length > 0 && (
             <div className="mt-4 border-t border-border/60 pt-3 max-h-72 overflow-y-auto scroll-thin">

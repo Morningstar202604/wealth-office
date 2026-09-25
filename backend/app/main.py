@@ -160,6 +160,40 @@ async def remove_transaction(tx_id: int) -> dict:
     return await db.delete_transaction(tx_id)
 
 
+@app.post("/api/nl-add")
+async def nl_add(payload: dict) -> dict:
+    """一句话记账：规则解析优先（秒回），规则拿不到金额时升级 AI，AI 也失败则 422 提示。"""
+    from . import nlparse
+
+    text = str((payload or {}).get("text") or "").strip()
+    if not text:
+        return JSONResponse({"error": "请输入一句话记账内容"}, status_code=400)
+
+    parsed = nlparse.parse(text)
+    source = "rule"
+    if parsed is None:
+        # 规则拿不到金额 → AI 兜底
+        parsed = await nlparse.parse_with_ai(text)
+        source = "ai" if parsed else None
+    elif parsed["category"] == "其他" and parsed["amount"] < 0:
+        # 规则拿到金额但分类不明确（非收入）→ AI 补分类，失败仍用规则结果入账
+        ai = await nlparse.parse_with_ai(text)
+        if ai is not None:
+            parsed, source = ai, "ai"
+    if parsed is None:
+        return JSONResponse(
+            {"error": "没读懂这句话，试试「昨天打车 32 元」「工资 8000 已到账」这样的说法"},
+            status_code=422,
+        )
+    try:
+        ins = await db.add_transaction(parsed["date"], parsed["item"], parsed["category"], parsed["amount"])
+        rows = await db.fetch_all("SELECT * FROM transactions WHERE id=?", (ins["id"],))
+        tx = rows[0] if rows else {"id": ins["id"], **parsed}
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return {"ok": True, "source": source, "transaction": tx}
+
+
 # ---------------------------------------------------------------------------
 # 预算
 # ---------------------------------------------------------------------------
