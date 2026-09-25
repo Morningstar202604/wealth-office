@@ -143,6 +143,22 @@ async def test_ask_regenerate_replaces_last(client) -> None:
     assert "总市值" in runs[0]["answer"]
 
 
+async def test_ai_misconfig_falls_back_to_template(client) -> None:
+    """AI 配置了但端点不可达 → 自动降级模板（不冒充模型输出）。"""
+    r = await client.put("/api/settings", json={"settings": {
+        "ai_enabled": "on",
+        "ai_base_url": "http://127.0.0.1:1/v1",  # 必然连接失败
+        "ai_api_key": "test-key",
+        "ai_model": "test-model",
+    }})
+    assert r.status_code == 200
+    async with client.stream("POST", "/api/ask", json={"question": "我的组合怎么样？", "thread_id": "ai-fallback"}) as resp:
+        events = await _sse_events(resp)
+    final = next(e for e in events if e["type"] == "final")
+    assert final["llm"] == "template"
+    assert "总市值" in final["answer"]
+
+
 async def test_manual_report(client) -> None:
     r = await client.post("/api/reports/generate")
     assert r.status_code == 200

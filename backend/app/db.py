@@ -78,6 +78,11 @@ SEED_SETTINGS = {
     "auto_refresh_seconds": "300",   # 自动刷新间隔（秒）
     "compact_numbers": "on",         # 大金额缩写（万/亿）
     "savings_goal": "20",            # 储蓄率目标（%）
+    # ---- AI 回答（OpenAI 兼容端点，可配任意国产/海外模型；失败自动降级模板）----
+    "ai_enabled": "off",             # 是否启用 AI 回答
+    "ai_base_url": "",               # 如 https://apihub.agnes-ai.com/v1
+    "ai_api_key": "",                # 仅存本机数据库
+    "ai_model": "",                  # 如 agnes-3.0-flash
     "data_note": "seed",
 }
 

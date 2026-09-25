@@ -1,4 +1,8 @@
-"""模型接入：httpx 直连任何 OpenAI 兼容端点（豆包 / DeepSeek / 通义千问等）。
+"""模型接入：httpx 直连任何 OpenAI 兼容端点（豆包 / DeepSeek / 通义千问 / Agnes 等）。
+
+配置来源（优先级）：
+1. 设置中心的「AI 回答」配置（ai_enabled=on 且 base/key/model 非空时生效）
+2. 环境变量 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
 
 未配置或调用失败 → 返回确定性模板（服务层兜底），不冒充模型输出。
 """
@@ -18,18 +22,41 @@ _client: httpx.AsyncClient | None = None
 _cfg: dict[str, str] | None = None
 
 
-def _config() -> dict[str, str] | None:
+async def _config() -> dict[str, str] | None:
     global _cfg
-    if _cfg is None:
-        base = os.getenv("LLM_BASE_URL", "").strip().rstrip("/")
-        key = os.getenv("LLM_API_KEY", "").strip()
-        model = os.getenv("LLM_MODEL", "").strip()
-        _cfg = {"base": base, "key": key, "model": model} if base and key and model else {}
+    if _cfg is not None:
+        return _cfg or None
+
+    # 1) 设置中心（数据库）优先：ai_enabled=on 且三要素齐全
+    try:
+        from . import db
+
+        s = await db.get_settings()
+        base = (s.get("ai_base_url") or "").strip().rstrip("/")
+        key = (s.get("ai_api_key") or "").strip()
+        model = (s.get("ai_model") or "").strip()
+        if s.get("ai_enabled") == "on" and base and key and model:
+            _cfg = {"base": base, "key": key, "model": model}
+            return _cfg
+    except Exception:  # noqa: BLE001 — 读取失败不影响后续
+        pass
+
+    # 2) 环境变量兜底
+    base = os.getenv("LLM_BASE_URL", "").strip().rstrip("/")
+    key = os.getenv("LLM_API_KEY", "").strip()
+    model = os.getenv("LLM_MODEL", "").strip()
+    _cfg = {"base": base, "key": key, "model": model} if base and key and model else {}
     return _cfg or None
 
 
-def llm_available() -> bool:
-    return _config() is not None
+def invalidate() -> None:
+    """设置中心修改 AI 配置后调用，使下次调用重新读取。"""
+    global _cfg
+    _cfg = None
+
+
+async def llm_available() -> bool:
+    return await _config() is not None
 
 
 def _client_ref() -> httpx.AsyncClient:
@@ -50,7 +77,7 @@ async def stream_narrate(system: str, user: str, fallback: str) -> AsyncIterator
 
     产出 (文本增量, 来源)。来源一旦为 'llm'，后续增量保持 llm；模板只产出一次。
     """
-    cfg = _config()
+    cfg = await _config()
     if cfg is None:
         yield fallback, "template"
         return

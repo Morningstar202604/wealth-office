@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  Download, KeyRound, Newspaper, Palette, RefreshCw, ShieldCheck, SlidersHorizontal, Sparkles,
+  Brain, Download, KeyRound, Newspaper, Palette, RefreshCw, ShieldCheck, SlidersHorizontal, Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -140,6 +140,30 @@ export function SettingsView() {
     toast("已恢复示例数据", "ok");
   };
 
+  const saveAi = async () => {
+    try {
+      const res = await api<{ ok: boolean; errors: string[] }>("/api/settings", {
+        method: "PUT",
+        body: JSON.stringify({
+          settings: {
+            ai_base_url: (form.ai_base_url ?? "").trim(),
+            ai_api_key: (form.ai_api_key ?? "").trim(),
+            ai_model: (form.ai_model ?? "").trim(),
+          },
+        }),
+      });
+      if (res.errors.length) {
+        toast(`保存失败：${res.errors.join("；")}`, "error");
+        return;
+      }
+      await store.refreshBootstrap();
+      store.bump();
+      toast("AI 配置已保存", "ok");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), "error");
+    }
+  };
+
   const exportBackup = async () => {
     try {
       const data = await api<Record<string, unknown>>("/api/export");
@@ -271,6 +295,56 @@ export function SettingsView() {
           <div>
             <label className={labelCls}>储蓄率目标（%）</label>
             <input className={inputCls} type="number" value={form.savings_goal ?? "20"} onChange={(e) => set("savings_goal", e.target.value)} />
+          </div>
+        </div>
+      </Section>
+
+      {/* AI 回答 */}
+      <Section
+        title="AI 回答"
+        icon={<Brain className="w-4 h-4 text-muted-foreground" />}
+        desc="接入任意 OpenAI 兼容模型（豆包 / DeepSeek / 通义 / Agnes 等）。未配置或调用失败时自动回退内置分析。"
+      >
+        <div className="space-y-3">
+          <Row label="启用 AI 回答" hint="开启后问答优先使用 AI 生成，失败自动降级">
+            <Switch checked={form.ai_enabled === "on"} onChange={() => toggle("ai_enabled")} label="启用 AI 回答" />
+          </Row>
+          <div>
+            <label className={labelCls}>接口地址（Base URL）</label>
+            <input
+              className={inputCls}
+              value={form.ai_base_url ?? ""}
+              onChange={(e) => set("ai_base_url", e.target.value)}
+              placeholder="https://apihub.agnes-ai.com/v1"
+            />
+          </div>
+          <div>
+            <label className={labelCls}>API Key（仅存本机）</label>
+            <input
+              className={inputCls}
+              type="password"
+              value={form.ai_api_key ?? ""}
+              onChange={(e) => set("ai_api_key", e.target.value)}
+              placeholder="sk-…"
+              autoComplete="off"
+            />
+          </div>
+          <div>
+            <label className={labelCls}>模型</label>
+            <input
+              className={inputCls}
+              value={form.ai_model ?? ""}
+              onChange={(e) => set("ai_model", e.target.value)}
+              placeholder="agnes-3.0-flash / deepseek-chat 等"
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-muted-foreground">
+              当前：{bootstrap.health.llm_configured ? `已启用（${bootstrap.health.model}）` : "未启用（内置分析）"}
+            </span>
+            <Button variant="outline" size="sm" onClick={() => void saveAi()}>
+              保存 AI 配置
+            </Button>
           </div>
         </div>
       </Section>

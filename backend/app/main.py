@@ -77,9 +77,17 @@ async def api_auth(request: Request, call_next):
 async def health() -> dict:
     return {
         "ok": True,
-        "llm_configured": llm.llm_available(),
-        "model": os.getenv("LLM_MODEL", ""),
+        "llm_configured": await llm.llm_available(),
+        "model": await _llm_model(),
     }
+
+
+async def _llm_model() -> str:
+    try:
+        s = await db.get_settings()
+        return (s.get("ai_model") or "").strip() or os.getenv("LLM_MODEL", "")
+    except Exception:  # noqa: BLE001
+        return os.getenv("LLM_MODEL", "")
 
 
 @app.get("/api/bootstrap")
@@ -89,8 +97,8 @@ async def bootstrap() -> dict:
         "settings": settings,
         "scheduler": scheduler.status(),
         "health": {
-            "llm_configured": llm.llm_available(),
-            "model": os.getenv("LLM_MODEL", ""),
+            "llm_configured": await llm.llm_available(),
+            "model": await _llm_model(),
         },
         "source": (await analysis.collect_dashboard())["source"],
     }
@@ -179,8 +187,10 @@ NUMERIC_KEYS = ("monthly_income", "emergency_target_months", "savings_goal", "au
 QUOTE_MODES = ("auto", "snapshot", "eastmoney")
 ONOFF_KEYS = (
     "voice_input", "show_export", "expand_process", "show_suggestions",
-    "auto_refresh", "compact_numbers",
+    "auto_refresh", "compact_numbers", "ai_enabled",
 )
+# AI 配置：文本直存（key 仅存本机数据库）
+AI_TEXT_KEYS = ("ai_base_url", "ai_api_key", "ai_model")
 NUMERIC_RANGES: dict[str, tuple[float, float]] = {
     "monthly_income": (0, 1e12),
     "emergency_target_months": (0, 120),
@@ -236,11 +246,20 @@ async def put_settings(payload: dict) -> dict:
                 errors.append("必要支出类别不能为空")
                 continue
             applied[key] = ",".join(cats)
+        elif key in AI_TEXT_KEYS:
+            v = str(raw).strip()
+            if key == "ai_base_url" and v and not v.startswith(("http://", "https://")):
+                errors.append("AI 接口地址需以 http:// 或 https:// 开头")
+                continue
+            applied[key] = v[:500]
         else:
             errors.append(f"未知配置项：{key}")
 
     for k, v in applied.items():
         await db.set_setting(k, v)
+    # AI 配置变化后使 llm 重新读取
+    if any(k in applied for k in ("ai_enabled", "ai_base_url", "ai_api_key", "ai_model")):
+        llm.invalidate()
     if "quote_source_mode" in applied:
         await invalidate_quotes_cache()
     if "report_time" in applied:
