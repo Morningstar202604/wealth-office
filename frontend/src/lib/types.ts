@@ -26,6 +26,7 @@ export interface DebtItem {
   monthly: number;
   balance: number;
   rate: number;
+  due_day?: string;
 }
 
 export interface RiskFlag {
@@ -65,7 +66,7 @@ export interface DashboardData {
     by_category: { category: string; amount: number }[];
   };
   subscriptions: {
-    items: { name: string; monthly: number; note: string }[];
+    items: { name: string; monthly: number; note: string; due_day?: string }[];
     monthly_total: number;
     annual_total: number;
   };

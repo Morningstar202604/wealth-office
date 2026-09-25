@@ -187,6 +187,56 @@ async def test_nl_add_rule_and_fallback(client) -> None:
     assert any(t["item"] == "打车" and t["amount"] == -32 for t in r5["transactions"])
 
 
+async def test_csv_import_preview_and_commit(client) -> None:
+    """账单 CSV：解析/列映射/预览 → 批量入账 → 流水可查。"""
+    csv_text = (
+        "交易时间,交易类型,交易对方,金额\n"
+        "2026-09-10 12:00:00,支出,滴滴出行,32.00\n"
+        "2026-09-11 08:00:00,收入,工资,8000\n"
+        "2026-09-12 20:00:00,支出,某某超市,56.50\n"
+    )
+    r = await client.post("/api/import/csv", json={"content": csv_text})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["total"] == 3
+    assert d["mapping"]["date"] == 0 and d["mapping"]["amount"] == 3 and d["mapping"]["desc"] == 2
+    by_desc = {p["item"]: p for p in d["preview"]}
+    assert by_desc["滴滴出行"]["amount"] == -32
+    assert by_desc["滴滴出行"]["category"] == "交通"
+    assert by_desc["工资"]["amount"] == 8000
+    assert by_desc["工资"]["category"] == "收入"
+
+    r2 = await client.post("/api/import/commit", json={"rows": d["preview"]})
+    assert r2.status_code == 200
+    assert r2.json()["imported"] == 3
+
+    r3 = (await client.get("/api/dashboard")).json()
+    assert any(t["item"] == "滴滴出行" and t["amount"] == -32 for t in r3["transactions"])
+    assert any(t["item"] == "工资" and t["amount"] == 8000 for t in r3["transactions"])
+
+    # 表头不可识别 → 422
+    r4 = await client.post("/api/import/csv", json={"content": "foo,bar\n1,2\n"})
+    assert r4.status_code == 422
+
+    # 空内容 → 400
+    r5 = await client.post("/api/import/csv", json={"content": ""})
+    assert r5.status_code == 400
+
+
+async def test_debt_due_day(client) -> None:
+    """负债扣款日：保存与归一化（非法值回退空）。"""
+    r = await client.post("/api/debts", json={"name": "车贷", "monthly": 2000, "balance": 80000, "rate": 0.05, "due_day": "28"})
+    assert r.status_code == 200
+    d = (await client.get("/api/dashboard")).json()
+    item = next(x for x in d["debts"]["items"] if x["name"] == "车贷")
+    assert item["due_day"] == "28"
+
+    await client.post("/api/debts", json={"name": "车贷", "monthly": 2000, "balance": 80000, "rate": 0.05, "due_day": "abc"})
+    d2 = (await client.get("/api/dashboard")).json()
+    item2 = next(x for x in d2["debts"]["items"] if x["name"] == "车贷")
+    assert item2["due_day"] == ""
+
+
 async def test_budgets_lifecycle(client) -> None:
     """预算：设置本月总预算+分类预算 → 实时使用率计算；非法月份拒绝。"""
     month = datetime.now().astimezone().strftime("%Y-%m")

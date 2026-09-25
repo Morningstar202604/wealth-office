@@ -50,14 +50,14 @@ SEED_TRANSACTIONS = [
 ]
 
 SEED_SUBSCRIPTIONS = [
-    {"name": "云盘会员", "monthly": 14.0, "note": "可合并到家庭共享"},
-    {"name": "健身私教", "monthly": 1999.0, "note": "占订阅支出绝大部分"},
-    {"name": "流媒体", "monthly": 21.5, "note": "与年付会员功能重叠"},
+    {"name": "云盘会员", "monthly": 14.0, "note": "可合并到家庭共享", "due_day": "1"},
+    {"name": "健身私教", "monthly": 1999.0, "note": "占订阅支出绝大部分", "due_day": "5"},
+    {"name": "流媒体", "monthly": 21.5, "note": "与年付会员功能重叠", "due_day": "28"},
 ]
 
 SEED_DEBTS = [
-    {"name": "房贷", "monthly": 6800.0, "balance": 1280000.0, "rate": 0.0345},
-    {"name": "信用卡分期", "monthly": 900.0, "balance": 7200.0, "rate": 0.13},
+    {"name": "房贷", "monthly": 6800.0, "balance": 1280000.0, "rate": 0.0345, "due_day": "15"},
+    {"name": "信用卡分期", "monthly": 900.0, "balance": 7200.0, "rate": 0.13, "due_day": "10"},
 ]
 
 SEED_SETTINGS = {
@@ -112,13 +112,15 @@ CREATE INDEX IF NOT EXISTS idx_tx_month ON transactions(date);
 CREATE TABLE IF NOT EXISTS subscriptions (
     name    TEXT PRIMARY KEY,
     monthly REAL NOT NULL,
-    note    TEXT NOT NULL DEFAULT ''
+    note    TEXT NOT NULL DEFAULT '',
+    due_day TEXT NOT NULL DEFAULT ''   -- 每月几号扣款（'' 表示未设置）
 );
 CREATE TABLE IF NOT EXISTS debts (
     name     TEXT PRIMARY KEY,
     monthly  REAL NOT NULL,
     balance  REAL NOT NULL,
-    rate     REAL NOT NULL
+    rate     REAL NOT NULL,
+    due_day  TEXT NOT NULL DEFAULT ''  -- 每月几号还款（'' 表示未设置）
 );
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -165,6 +167,7 @@ async def init_db() -> None:
     _db.row_factory = aiosqlite.Row
     await _db.execute("PRAGMA journal_mode=WAL")
     await _db.executescript(SCHEMA)
+    await _migrate_add_columns()
     # 全新库（settings 表为空）才种示例数据；老库即使用户清空了持仓也绝不重置
     if await _count("settings") == 0:
         await _seed_all()
@@ -172,6 +175,21 @@ async def init_db() -> None:
     await _migrate_sessions_from_runs()
     await _db.commit()
     _inited = True
+
+
+async def _migrate_add_columns() -> None:
+    """老库增量迁移：为已有表补新列（CREATE TABLE IF NOT EXISTS 不会改老表）。"""
+    assert _db is not None
+    cols = {
+        "subscriptions": {"due_day": "TEXT NOT NULL DEFAULT ''"},
+        "debts": {"due_day": "TEXT NOT NULL DEFAULT ''"},
+    }
+    for table, adds in cols.items():
+        cur = await _db.execute(f"PRAGMA table_info({table})")
+        existing = {row["name"] for row in await cur.fetchall()}
+        for col, decl in adds.items():
+            if col not in existing:
+                await _db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
 
 async def close_db() -> None:
@@ -187,6 +205,16 @@ async def _conn() -> aiosqlite.Connection:
         await init_db()
     assert _db is not None
     return _db
+
+
+def _clean_due_day(v: object) -> str:
+    """扣款日归一化：'' / '1'..'31'；非法值返回 ''。"""
+    s = str(v or "").strip()
+    if s in {"", "0"}:
+        return ""
+    if s.isdigit() and 1 <= int(s) <= 31:
+        return s
+    return ""
 
 
 async def _count(table: str) -> int:
@@ -210,12 +238,12 @@ async def _seed_all() -> None:
         [( _seed_date(d), item, cat, amt) for d, item, cat, amt in SEED_TRANSACTIONS],
     )
     await _db.executemany(
-        "INSERT INTO subscriptions(name,monthly,note) VALUES(:name,:monthly,:note)",
-        SEED_SUBSCRIPTIONS,
+        "INSERT INTO subscriptions(name,monthly,note,due_day) VALUES(:name,:monthly,:note,:due_day)",
+        [{**s, "due_day": s.get("due_day", "")} for s in SEED_SUBSCRIPTIONS],
     )
     await _db.executemany(
-        "INSERT INTO debts(name,monthly,balance,rate) VALUES(:name,:monthly,:balance,:rate)",
-        SEED_DEBTS,
+        "INSERT INTO debts(name,monthly,balance,rate,due_day) VALUES(:name,:monthly,:balance,:rate,:due_day)",
+        [{**d, "due_day": d.get("due_day", "")} for d in SEED_DEBTS],
     )
     await _db.executemany(
         "INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)",
@@ -394,13 +422,14 @@ async def add_debt(d: dict[str, Any]) -> dict[str, Any]:
         "monthly": float(d.get("monthly", 0) or 0),
         "balance": float(d.get("balance", 0) or 0),
         "rate": float(d.get("rate", 0) or 0),
+        "due_day": _clean_due_day(d.get("due_day", "")),
     }
     if not clean["name"]:
         raise ValueError("名称不能为空")
     await conn.execute(
-        "INSERT INTO debts(name,monthly,balance,rate) VALUES(:name,:monthly,:balance,:rate)"
+        "INSERT INTO debts(name,monthly,balance,rate,due_day) VALUES(:name,:monthly,:balance,:rate,:due_day)"
         " ON CONFLICT(name) DO UPDATE SET monthly=excluded.monthly,"
-        " balance=excluded.balance, rate=excluded.rate",
+        " balance=excluded.balance, rate=excluded.rate, due_day=excluded.due_day",
         clean,
     )
     await conn.commit()

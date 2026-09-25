@@ -195,6 +195,70 @@ async def nl_add(payload: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 账单导入（CSV）
+# ---------------------------------------------------------------------------
+
+@app.post("/api/import/csv")
+async def import_csv_parse(payload: dict) -> dict:
+    """解析 CSV → 识别列映射 + 预览（前 15 条）+ 可导入条数统计。"""
+    from . import csvimport
+
+    content = str((payload or {}).get("content") or "").strip()
+    if not content:
+        return JSONResponse({"error": "请粘贴账单 CSV 内容"}, status_code=400)
+    try:
+        parsed = csvimport.parse_csv(content)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    mapping = csvimport.detect_mapping(parsed["columns"])
+    if mapping["amount"] < 0 or mapping["date"] < 0:
+        return JSONResponse(
+            {"error": "没能识别出日期/金额列，请确认表头包含「日期」「金额」等关键词"},
+            status_code=422,
+        )
+    year = datetime.now().astimezone().strftime("%Y-%m")
+    rows, skips = csvimport.build_rows(mapping, parsed["columns"], parsed["rows"], year_fill=year)
+    return {
+        "ok": True,
+        "columns": parsed["columns"],
+        "mapping": mapping,
+        "preview": rows[:15],
+        "total": len(rows),
+        "skipped": len(skips),
+    }
+
+
+@app.post("/api/import/commit")
+async def import_csv_commit(payload: dict) -> dict:
+    """按前端确认的 rows 批量入账；逐条校验，坏行计入失败数。"""
+    rows = (payload or {}).get("rows")
+    if not isinstance(rows, list) or not rows:
+        return JSONResponse({"error": "没有可导入的数据"}, status_code=400)
+    ok, failed = 0, []
+    for r in rows:
+        if not isinstance(r, dict):
+            failed.append("非法行")
+            continue
+        date = str(r.get("date") or "").strip()
+        item = str(r.get("item") or "其他").strip()[:40] or "其他"
+        category = str(r.get("category") or "其他").strip() or "其他"
+        try:
+            amount = float(r.get("amount", 0) or 0)
+        except (TypeError, ValueError):
+            failed.append(item)
+            continue
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) or amount == 0:
+            failed.append(item)
+            continue
+        try:
+            await db.add_transaction(date, item, category, amount)
+            ok += 1
+        except Exception:  # noqa: BLE001 — 单行失败不影响整体
+            failed.append(item)
+    return {"ok": True, "imported": ok, "failed": failed}
+
+
+# ---------------------------------------------------------------------------
 # 预算
 # ---------------------------------------------------------------------------
 

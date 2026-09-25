@@ -66,6 +66,56 @@ function RiskBanner({ flags }: { flags: DashboardData["flags"] }) {
   );
 }
 
+/** 近期待扣提醒：今天到期（红）与 3 天内到期（黄）的负债与订阅。 */
+function DueSoonStrip({ dashboard }: { dashboard: DashboardData }) {
+  const today = new Date();
+  const day = today.getDate();
+  const monthLabel = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+  const items = [
+    ...dashboard.debts.items.map((d) => ({ name: d.name, amount: d.monthly, due: d.due_day ?? "", kind: "还款" as const })),
+    ...dashboard.subscriptions.items.map((s) => ({ name: s.name, amount: s.monthly, due: s.due_day ?? "", kind: "扣款" as const })),
+  ].filter((i) => i.due && /^\d{1,2}$/.test(i.due));
+
+  const dueToday = items.filter((i) => Number(i.due) === day);
+  const dueSoon = items.filter((i) => Number(i.due) > day && Number(i.due) - day <= 3);
+  if (dueToday.length === 0 && dueSoon.length === 0) return null;
+  const totalToday = dueToday.reduce((s, i) => s + i.amount, 0);
+  const totalSoon = dueSoon.reduce((s, i) => s + i.amount, 0);
+
+  return (
+    <Card className="p-[var(--card-pad)]">
+      <div className="flex items-center gap-1.5 text-sm font-medium mb-2">
+        <span className="w-2 h-2 rounded-full bg-red-500 inline-block" />
+        本月待扣提醒（{monthLabel}）
+      </div>
+      {dueToday.length > 0 && (
+        <div className="rounded-lg bg-red-500/10 border border-red-500/30 px-3 py-2 mb-2">
+          <div className="text-xs font-medium text-red-600 dark:text-red-400">今天到期 · 共 {fmtMoney(totalToday, false)}</div>
+          <div className="mt-1 flex gap-2 flex-wrap text-xs">
+            {dueToday.map((i) => (
+              <span key={i.name} className="tabular-nums">
+                {i.name} {fmtMoney(i.amount, false)}（{i.due} 号{i.kind === "还款" ? "还款" : "扣款"}）
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {dueSoon.length > 0 && (
+        <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 px-3 py-2">
+          <div className="text-xs font-medium text-amber-600 dark:text-amber-400">近 3 天内到期 · 共 {fmtMoney(totalSoon, false)}</div>
+          <div className="mt-1 flex gap-2 flex-wrap text-xs">
+            {dueSoon.map((i) => (
+              <span key={i.name} className="tabular-nums">
+                {i.name} {fmtMoney(i.amount, false)}（{i.due} 号{i.kind === "还款" ? "还款" : "扣款"}）
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function AssetPie({ data }: { data: DashboardData }) {
   const ref = useRef<HTMLDivElement>(null);
   const palette = usePalette();
@@ -315,6 +365,9 @@ export function Dashboard() {
 
       <RiskBanner flags={dashboard.flags} />
 
+      {/* 近期待扣提醒：今天到期红标、3 天内黄标 */}
+      <DueSoonStrip dashboard={dashboard} />
+
       {/* 图表 */}
       <div className="grid lg:grid-cols-2 gap-3">
         <Card className="p-[var(--card-pad)]">
@@ -364,7 +417,9 @@ export function Dashboard() {
                 <li key={d.name} className="flex items-center justify-between text-sm">
                   <span>
                     {d.name}
-                    <span className="text-xs text-muted-foreground ml-2">利率 {(d.rate * 100).toFixed(1)}%</span>
+                    <span className="text-xs text-muted-foreground ml-2">
+                      利率 {(d.rate * 100).toFixed(1)}%{d.due_day ? ` · ${d.due_day} 号还` : ""}
+                    </span>
                   </span>
                   <span className="tabular-nums">{fmtMoney(d.monthly, false, compact)}/月</span>
                 </li>
@@ -388,7 +443,10 @@ export function Dashboard() {
           <ul className="mt-2 space-y-1.5">
             {dashboard.subscriptions.items.map((s) => (
               <li key={s.name} className="flex items-center justify-between text-sm">
-                <span>{s.name}</span>
+                <span>
+                  {s.name}
+                  {s.due_day && <span className="text-xs text-muted-foreground ml-1.5">{s.due_day} 号扣</span>}
+                </span>
                 <span className="tabular-nums text-muted-foreground">{fmtMoney(s.monthly, false, compact)}/月</span>
               </li>
             ))}

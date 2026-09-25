@@ -180,8 +180,7 @@ function TransactionForm({ onDone }: { onDone: () => void }) {
   );
 }
 
-/** 一句话记账：规则解析秒回，复杂句自动升级 AI；成功直接入账。 */
-function NlForm({ onDone }: { onDone: () => void }) {
+/** 一句话记账：规则解析秒回，复杂句自动升级 AI；成功直接入账。 */function NlForm({ onDone }: { onDone: () => void }) {
   const { toast } = useToast();
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -243,8 +242,139 @@ function NlForm({ onDone }: { onDone: () => void }) {
   );
 }
 
+interface ImportPreview {
+  columns: string[];
+  mapping: { date: number; amount: number; type: number; desc: number };
+  preview: { date: string; item: string; category: string; amount: number }[];
+  total: number;
+  skipped: number;
+}
+
+/** 账单 CSV 导入：粘贴 → 解析预览（自动识别列/分类）→ 确认批量入账。 */
+function ImportPanel({ onDone }: { onDone: () => void }) {
+  const { toast } = useToast();
+  const [content, setContent] = useState("");
+  const [parsed, setParsed] = useState<ImportPreview | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [importing, setImporting] = useState(false);
+
+  const parse = async () => {
+    if (!content.trim()) return;
+    setBusy(true);
+    try {
+      const r = await api<ImportPreview>("/api/import/csv", {
+        method: "POST",
+        body: JSON.stringify({ content }),
+      });
+      setParsed(r);
+    } catch (e) {
+      setParsed(null);
+      toast(e instanceof Error ? e.message : String(e), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const commit = async () => {
+    if (!parsed) return;
+    setImporting(true);
+    try {
+      const r = await api<{ imported: number; failed: string[] }>("/api/import/commit", {
+        method: "POST",
+        body: JSON.stringify({ rows: parsed.preview }),
+      });
+      toast(r.failed.length ? `导入 ${r.imported} 条，跳过 ${r.failed.length} 条` : `已导入 ${r.imported} 笔账单`, r.failed.length ? "error" : "ok");
+      setContent("");
+      setParsed(null);
+      onDone();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), "error");
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const readFile = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => setContent(String(reader.result ?? ""));
+    reader.readAsText(file, "utf-8");
+  };
+
+  return (
+    <div className="mb-3 rounded-xl border border-border/70 p-3">
+      <div className="text-xs font-medium mb-1.5">导入账单（CSV）</div>
+      <div className="text-[11px] text-muted-foreground mb-2">
+        支持微信 / 支付宝 / 银行导出的账单 CSV，自动识别日期、金额、收支与分类
+      </div>
+      <textarea
+        className={`${inputCls} min-h-16`}
+        value={content}
+        onChange={(e) => setContent(e.target.value)}
+        placeholder={"粘贴 CSV 内容，或点击右侧上传文件…\n示例：交易时间,交易类型,交易对方,金额"}
+      />
+      <div className="mt-2 flex gap-2">
+        <Button size="sm" variant="outline" onClick={() => void parse()} disabled={busy || !content.trim()}>
+          {busy ? "解析中…" : "解析预览"}
+        </Button>
+        <label className="inline-flex items-center text-xs text-muted-foreground cursor-pointer hover:text-primary">
+          上传文件
+          <input
+            type="file"
+            accept=".csv,.txt,text/csv,text/plain"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) readFile(f);
+              e.target.value = "";
+            }}
+          />
+        </label>
+      </div>
+
+      {parsed && (
+        <div className="mt-3 border-t border-border/60 pt-3">
+          <div className="text-xs mb-2">
+            识别到 <b className="tabular-nums">{parsed.total}</b> 条可导入
+            {parsed.skipped > 0 && <span className="text-muted-foreground"> · 跳过 {parsed.skipped} 条（缺金额/日期）</span>}
+          </div>
+          <div className="overflow-x-auto scroll-thin">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-muted-foreground text-left">
+                  <th className="py-1 pr-3">日期</th>
+                  <th className="py-1 pr-3">名称</th>
+                  <th className="py-1 pr-3">分类</th>
+                  <th className="py-1 text-right">金额</th>
+                </tr>
+              </thead>
+              <tbody>
+                {parsed.preview.map((p, i) => (
+                  <tr key={i} className="border-t border-border/40">
+                    <td className="py-1 pr-3 tabular-nums">{p.date}</td>
+                    <td className="py-1 pr-3 truncate max-w-32">{p.item}</td>
+                    <td className="py-1 pr-3">{p.category}</td>
+                    <td className={`py-1 text-right tabular-nums ${p.amount > 0 ? "text-up" : "text-down"}`}>{fmtMoney(p.amount, true)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-2 flex gap-2">
+            <Button size="sm" onClick={() => void commit()} disabled={importing || parsed.total === 0}>
+              {importing ? "导入中…" : `确认导入 ${parsed.total} 条`}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setParsed(null)}>
+              取消
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DebtForm({ onDone }: { onDone: () => void }) {
-  const [f, setF] = useState({ name: "", monthly: "", balance: "", rate: "" });
+  const [f, setF] = useState({ name: "", monthly: "", balance: "", rate: "", dueDay: "" });
   const [err, setErr] = useState("");
 
   const submit = async () => {
@@ -257,9 +387,10 @@ function DebtForm({ onDone }: { onDone: () => void }) {
           monthly: Number(f.monthly),
           balance: Number(f.balance),
           rate: Number(f.rate) / 100,
+          due_day: f.dueDay.trim(),
         }),
       });
-      setF({ name: "", monthly: "", balance: "", rate: "" });
+      setF({ name: "", monthly: "", balance: "", rate: "", dueDay: "" });
       onDone();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -284,6 +415,10 @@ function DebtForm({ onDone }: { onDone: () => void }) {
         <div>
           <label className={labelCls}>年利率（%）</label>
           <input className={inputCls} type="number" value={f.rate} onChange={(e) => setF({ ...f, rate: e.target.value })} placeholder="3.45" />
+        </div>
+        <div>
+          <label className={labelCls}>每月还款日（几号，可留空）</label>
+          <input className={inputCls} type="number" min="1" max="31" value={f.dueDay} onChange={(e) => setF({ ...f, dueDay: e.target.value })} placeholder="15" />
         </div>
       </div>
       {err && <div className="text-xs text-red-600 dark:text-red-400">{err}</div>}
@@ -352,6 +487,7 @@ export function EntryView() {
       {tab === "transaction" && (
         <Section title="记一笔流水">
           <NlForm onDone={() => appStore.bump()} />
+          <ImportPanel onDone={() => appStore.bump()} />
           <TransactionForm onDone={() => appStore.bump()} />
           {dashboard && dashboard.transactions.length > 0 && (
             <div className="mt-4 border-t border-border/60 pt-3 max-h-72 overflow-y-auto scroll-thin">
