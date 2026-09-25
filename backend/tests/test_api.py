@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 import httpx
 import pytest
@@ -157,6 +158,36 @@ async def test_ai_misconfig_falls_back_to_template(client) -> None:
     final = next(e for e in events if e["type"] == "final")
     assert final["llm"] == "template"
     assert "总市值" in final["answer"]
+
+
+async def test_budgets_lifecycle(client) -> None:
+    """预算：设置本月总预算+分类预算 → 实时使用率计算；非法月份拒绝。"""
+    month = datetime.now().astimezone().strftime("%Y-%m")
+    r = await client.put("/api/budgets", json={"month": month, "budgets": [
+        {"category": "__total", "amount": 5000},
+        {"category": "餐饮", "amount": 800},
+    ]})
+    assert r.status_code == 200
+    assert r.json()["count"] == 2
+
+    d = (await client.get(f"/api/budgets?month={month}")).json()
+    assert d["month"] == month
+    assert d["usage"]["total_budget"] == 5000
+    assert d["usage"]["total_spent"] > 0
+    assert d["usage"]["total_pct"] > 0
+    assert d["usage"]["days_left"] >= 1
+    cats = {c["category"]: c for c in d["usage"]["categories"]}
+    assert "餐饮" in cats
+    assert cats["餐饮"]["budget"] == 800
+
+    # 非法月份拒绝
+    r2 = await client.put("/api/budgets", json={"month": "2026-13", "budgets": []})
+    assert r2.status_code == 400
+
+    # 重置后预算被清空
+    await client.post("/api/portfolio/reset")
+    d2 = (await client.get(f"/api/budgets?month={month}")).json()
+    assert d2["usage"]["total_budget"] == 0
 
 
 async def test_manual_report(client) -> None:

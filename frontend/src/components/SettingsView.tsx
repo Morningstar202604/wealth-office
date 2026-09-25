@@ -65,10 +65,52 @@ export function SettingsView() {
   const [saving, setSaving] = useState(false);
   const [tokenInput, setTokenInput] = useState(getToken());
   const [reports, setReports] = useState<RunRecord[]>([]);
+  const [budgetTotal, setBudgetTotal] = useState("");
+  const [budgetCats, setBudgetCats] = useState("");
 
   useEffect(() => {
     if (bootstrap) setForm({ ...bootstrap.settings });
   }, [bootstrap]);
+
+  // 加载本月预算设置
+  useEffect(() => {
+    let alive = true;
+    api<{ budgets: { key: string; amount: number }[] }>("/api/budgets")
+      .then((d) => {
+        if (!alive) return;
+        const total = d.budgets.find((b) => b.key === "__total");
+        setBudgetTotal(total ? String(total.amount) : "");
+        setBudgetCats(
+          d.budgets
+            .filter((b) => b.key !== "__total")
+            .map((b) => `${b.key} ${b.amount}`)
+            .join("\n"),
+        );
+      })
+      .catch(() => {
+        /* 预算读取失败不阻塞设置页 */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const saveBudget = async () => {
+    const items: { category: string; amount: number }[] = [];
+    const total = Number(budgetTotal);
+    if (Number.isFinite(total) && total > 0) items.push({ category: "__total", amount: total });
+    for (const line of budgetCats.split("\n")) {
+      const m = line.trim().match(/^(.+?)\s+(\d+(?:\.\d+)?)$/);
+      if (m && Number(m[2]) > 0) items.push({ category: m[1].trim(), amount: Number(m[2]) });
+    }
+    try {
+      await api("/api/budgets", { method: "PUT", body: JSON.stringify({ budgets: items }) });
+      toast("预算已保存", "ok");
+      store.bump();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), "error");
+    }
+  };
 
   // 加载最近晨报（生成 / 进入设置页时刷新）
   const loadReports = useCallback(async () => {
@@ -295,6 +337,36 @@ export function SettingsView() {
           <div>
             <label className={labelCls}>储蓄率目标（%）</label>
             <input className={inputCls} type="number" value={form.savings_goal ?? "20"} onChange={(e) => set("savings_goal", e.target.value)} />
+          </div>
+        </div>
+      </Section>
+
+      {/* 预算 */}
+      <Section
+        title="预算"
+        desc="设置本月总预算与分类预算，仪表盘实时展示进度、剩余日均与超支预警"
+      >
+        <div className="space-y-3">
+          <div>
+            <label className={labelCls}>本月总预算（元）</label>
+            <input className={inputCls} type="number" min="0" value={budgetTotal} onChange={(e) => setBudgetTotal(e.target.value)} placeholder="例如 5000" />
+          </div>
+          <div>
+            <label className={labelCls}>分类预算（每行「类别 金额」）</label>
+            <textarea
+              className={`${inputCls} min-h-24`}
+              value={budgetCats}
+              onChange={(e) => setBudgetCats(e.target.value)}
+              placeholder={"餐饮 800\n交通 300\n购物 500"}
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-muted-foreground">
+              {budgetTotal ? `总预算 ¥${budgetTotal}` : "未设置总预算"} · 分类 {budgetCats.trim() ? budgetCats.trim().split("\n").filter((l) => l.trim()).length : 0} 项
+            </span>
+            <Button variant="outline" size="sm" onClick={() => void saveBudget()} disabled={saving}>
+              保存预算
+            </Button>
           </div>
         </div>
       </Section>

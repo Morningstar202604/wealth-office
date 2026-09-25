@@ -10,8 +10,10 @@ import asyncio
 import json
 import logging
 import os
+import re
 import uuid
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -156,6 +158,86 @@ async def create_transaction(payload: dict) -> dict:
 @app.delete("/api/transactions/{tx_id}")
 async def remove_transaction(tx_id: int) -> dict:
     return await db.delete_transaction(tx_id)
+
+
+# ---------------------------------------------------------------------------
+# 预算
+# ---------------------------------------------------------------------------
+
+def _current_month() -> str:
+    return datetime.now().astimezone().strftime("%Y-%m")
+
+
+@app.get("/api/budgets")
+async def get_budgets(month: str | None = None) -> dict:
+    """返回指定月（默认本月）的预算设置 + 实时使用情况。"""
+    m = (month or "").strip() or _current_month()
+    rows = await db.list_budgets(m)
+    budgets = [
+        {"category": "总预算" if r["category"] == "__total" else r["category"], "key": r["category"], "amount": r["amount"]}
+        for r in rows
+    ]
+    spent_by_cat = await db.month_expense_by_category(m)
+    total_spent = round(sum(spent_by_cat.values()), 2)
+    total_budget = next((r["amount"] for r in rows if r["category"] == "__total"), 0.0)
+
+    cat_usage = []
+    for b in budgets:
+        key = b["key"]
+        if key == "__total":
+            continue
+        spent = round(spent_by_cat.get(key, 0.0), 2)
+        cat_usage.append({
+            "category": b["category"],
+            "budget": b["amount"],
+            "spent": spent,
+            "pct": round(spent / b["amount"] * 100, 1) if b["amount"] else 0,
+            "over": spent > b["amount"],
+        })
+
+    total_pct = round(total_spent / total_budget * 100, 1) if total_budget else 0
+    # 剩余日均：余量 / 本月剩余天数（含今天）
+    now = datetime.now().astimezone()
+    next_month = datetime(now.year + (now.month == 12), (now.month % 12) + 1, 1, tzinfo=now.tzinfo)
+    days_left = max(1, (next_month - now.replace(hour=0, minute=0, second=0, microsecond=0)).days)
+    left_daily = round((total_budget - total_spent) / days_left, 2) if total_budget else 0.0
+
+    return {
+        "month": m,
+        "budgets": budgets,
+        "usage": {
+            "total_budget": total_budget,
+            "total_spent": total_spent,
+            "total_pct": total_pct,
+            "over": total_budget > 0 and total_spent > total_budget,
+            "left": round(total_budget - total_spent, 2),
+            "left_daily": left_daily,
+            "days_left": days_left,
+            "categories": cat_usage,
+        },
+    }
+
+
+@app.put("/api/budgets")
+async def put_budgets(payload: dict) -> dict:
+    month = (payload or {}).get("month") or _current_month()
+    if not re.fullmatch(r"(20\d{2}|19\d{2})-(0[1-9]|1[0-2])", month):
+        return JSONResponse({"error": "月份需为 YYYY-MM（01–12）"}, status_code=400)
+    items = (payload or {}).get("budgets")
+    if not isinstance(items, list):
+        return JSONResponse({"error": "budgets 需为数组"}, status_code=400)
+    clean = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        try:
+            amt = float(it.get("amount", 0) or 0)
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "预算金额不合法"}, status_code=400)
+        if amt > 0:
+            clean.append({"category": str(it.get("category", "__total")), "amount": amt})
+    await db.save_budgets(month, clean)
+    return {"ok": True, "month": month, "count": len(clean)}
 
 
 @app.post("/api/debts")

@@ -101,6 +101,29 @@ export interface TrendMonth {
   net: number;
 }
 
+export interface BudgetCatUsage {
+  category: string;
+  budget: number;
+  spent: number;
+  pct: number;
+  over: boolean;
+}
+
+export interface BudgetUsage {
+  month: string;
+  budgets: { category: string; key: string; amount: number }[];
+  usage: {
+    total_budget: number;
+    total_spent: number;
+    total_pct: number;
+    over: boolean;
+    left: number;
+    left_daily: number;
+    days_left: number;
+    categories: BudgetCatUsage[];
+  };
+}
+
 export interface SchedulerStatus {
   enabled: boolean;
   report_time: string;

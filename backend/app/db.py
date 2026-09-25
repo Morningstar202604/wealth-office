@@ -124,6 +124,12 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS budgets (
+    month    TEXT NOT NULL,   -- YYYY-MM
+    category TEXT NOT NULL,   -- __total 表示总预算，其余为分类预算
+    amount   REAL NOT NULL,
+    PRIMARY KEY (month, category)
+);
 CREATE TABLE IF NOT EXISTS runs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     thread_id     TEXT NOT NULL,
@@ -248,7 +254,7 @@ async def _migrate_sessions_from_runs() -> None:
 async def reset_to_seed() -> dict[str, Any]:
     """清空并重新种入示例数据（演示/测试用）。"""
     conn = await _conn()
-    for t in ("positions", "transactions", "subscriptions", "debts", "settings"):
+    for t in ("positions", "transactions", "subscriptions", "debts", "settings", "budgets"):
         await conn.execute(f"DELETE FROM {t}")
     await _seed_all()
     await conn.commit()
@@ -285,6 +291,41 @@ async def list_debts() -> list[dict[str, Any]]:
 async def get_settings() -> dict[str, str]:
     rows = await fetch_all("SELECT * FROM settings")
     return {r["key"]: r["value"] for r in rows}
+
+
+# --------------------------------------------------------------------------
+# 预算（budgets：month + category → amount；__total 为总预算）
+# --------------------------------------------------------------------------
+
+async def list_budgets(month: str) -> list[dict[str, Any]]:
+    return await fetch_all("SELECT month, category, amount FROM budgets WHERE month=? ORDER BY category", (month,))
+
+
+async def save_budgets(month: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+    """整月替换式保存：先删该月旧预算，再写入新列表。"""
+    conn = await _conn()
+    await conn.execute("DELETE FROM budgets WHERE month=?", (month,))
+    for it in items:
+        cat = str(it.get("category", "")).strip() or "__total"
+        amt = float(it.get("amount", 0) or 0)
+        if amt <= 0:
+            continue
+        await conn.execute(
+            "INSERT INTO budgets(month,category,amount) VALUES(?,?,?)",
+            (month, cat[:40], amt),
+        )
+    await conn.commit()
+    return {"ok": True, "month": month, "count": len(items)}
+
+
+async def month_expense_by_category(month: str) -> dict[str, float]:
+    """当月支出按分类汇总（amount<0 视为支出，取绝对值）。"""
+    rows = await fetch_all(
+        "SELECT category, SUM(-amount) AS spent FROM transactions"
+        " WHERE date LIKE ? AND amount < 0 GROUP BY category",
+        (f"{month}%",),
+    )
+    return {r["category"]: float(r["spent"] or 0) for r in rows}
 
 
 # --------------------------------------------------------------------------
@@ -522,7 +563,7 @@ def uuid_hex() -> str:
 # --------------------------------------------------------------------------
 
 async def export_data() -> dict[str, Any]:
-    """全量导出（备份）：持仓 / 流水 / 订阅 / 负债 / 设置 / 会话 / 问答。"""
+    """全量导出（备份）：持仓 / 流水 / 订阅 / 负债 / 预算 / 设置 / 会话 / 问答。"""
     runs = await fetch_all("SELECT * FROM runs ORDER BY id")
     for r in runs:
         try:
@@ -536,6 +577,7 @@ async def export_data() -> dict[str, Any]:
         "transactions": await list_transactions(),
         "subscriptions": await list_subscriptions(),
         "debts": await list_debts(),
+        "budgets": await fetch_all("SELECT * FROM budgets ORDER BY month, category"),
         "settings": await get_settings(),
         "sessions": await list_sessions(),
         "runs": runs,

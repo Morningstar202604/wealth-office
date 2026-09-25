@@ -10,7 +10,7 @@ import { api } from "@/lib/api";
 import { store } from "@/lib/store";
 import { fmtMoney, fmtPct, fmtMonth } from "@/lib/format";
 import { PositionsTable } from "@/components/PositionsTable";
-import type { DashboardData, TrendMonth } from "@/lib/types";
+import type { DashboardData, TrendMonth, BudgetUsage } from "@/lib/types";
 
 function StatCard({
   label,
@@ -206,6 +206,66 @@ function EmergencyCard({ data }: { data: DashboardData }) {
   );
 }
 
+/** 本月预算：总预算进度 + 剩余日均 + 分类进度；未设置预算时不占位 */
+function BudgetCard() {
+  const [budget, setBudget] = useState<BudgetUsage | null>(null);
+  const compact = store.getState().bootstrap?.settings.compact_numbers === "on";
+  useEffect(() => {
+    let alive = true;
+    api<BudgetUsage>("/api/budgets")
+      .then((r) => alive && setBudget(r))
+      .catch(() => alive && setBudget(null));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (!budget || budget.usage.total_budget <= 0) return null;
+  const u = budget.usage;
+  const barCls = u.over ? "bg-red-500" : u.total_pct >= 80 ? "bg-amber-500" : "bg-down";
+  return (
+    <Card className="p-[var(--card-pad)]">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium">{budget.month} 预算</div>
+        <Badge variant={u.over ? "warn" : "ok"}>{u.over ? "已超支" : u.total_pct >= 80 ? "接近上限" : "进度正常"}</Badge>
+      </div>
+      <div className="mt-3 flex items-baseline gap-1">
+        <span className="text-2xl font-bold tabular-nums">{fmtMoney(u.total_spent, false, compact)}</span>
+        <span className="text-sm text-muted-foreground">/ {fmtMoney(u.total_budget, false, compact)}（{u.total_pct}%）</span>
+      </div>
+      <div className="mt-2 h-2 rounded-full bg-muted overflow-hidden">
+        <div className={`h-full rounded-full ${barCls}`} style={{ width: `${Math.min(100, u.total_pct)}%` }} />
+      </div>
+      <div className="mt-2 text-xs text-muted-foreground">
+        {u.over ? `超支 ${fmtMoney(-u.left, false, compact)}` : `剩余 ${fmtMoney(u.left, false, compact)}`}
+        {" · 日均 "}
+        {u.over ? `超 ${fmtMoney(-u.left_daily, false, compact)}` : `可用 ${fmtMoney(u.left_daily, false, compact)}`}
+      </div>
+      {u.categories.filter((c) => c.budget > 0).length > 0 && (
+        <ul className="mt-3 space-y-1.5">
+          {u.categories.filter((c) => c.budget > 0).slice(0, 4).map((c) => (
+            <li key={c.category} className="text-xs">
+              <div className="flex justify-between text-muted-foreground">
+                <span>{c.category}</span>
+                <span className={c.over ? "text-red-500 font-medium" : ""}>
+                  {fmtMoney(c.spent, false, compact)} / {fmtMoney(c.budget, false, compact)}
+                  {c.over ? " 超支" : ""}
+                </span>
+              </div>
+              <div className="mt-0.5 h-1.5 rounded-full bg-muted overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${c.over ? "bg-red-500" : c.pct >= 80 ? "bg-amber-500" : "bg-down"}`}
+                  style={{ width: `${Math.min(100, c.pct)}%` }}
+                />
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
 export function Dashboard() {
   const { dashboard, loading, bootstrap } = store.useApp();
   const [trend, setTrend] = useState<TrendMonth[] | null>(null);
@@ -283,9 +343,10 @@ export function Dashboard() {
         )}
       </Card>
 
-      {/* 应急金 + 负债 */}
-      <div className="grid lg:grid-cols-2 gap-3">
+      {/* 应急金 + 负债 + 预算 */}
+      <div className="grid lg:grid-cols-3 gap-3">
         <EmergencyCard data={dashboard} />
+        <BudgetCard />
         <Card className="p-[var(--card-pad)]">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1.5 text-sm font-medium">
