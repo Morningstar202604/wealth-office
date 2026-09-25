@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  ChevronDown, ChevronUp, Copy, Download, Loader2, MessageCircle, Mic, MicOff, Search, Send, Square, Sparkles,
+  ChevronDown, ChevronUp, Copy, Download, Loader2, MessageCircle, Mic, MicOff, RotateCcw, Search, Send, Square, Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -146,15 +146,33 @@ export function ChatView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
 
-  const send = async (text: string) => {
+  const send = async (text: string, opts?: { regenerate?: boolean }) => {
     const q = text.trim();
     if (!q || busy) return;
-    setInput("");
+    const regen = opts?.regenerate ?? false;
+
+    if (!regen) setInput("");
     setBusy(true);
 
-    const userMsg: ChatMessage = { id: msgSeq++, role: "user", text: q, steps: [] };
-    const asstMsg: ChatMessage = { id: msgSeq++, role: "assistant", text: "", q, steps: [] };
-    setMessages((prev) => [...prev, userMsg, asstMsg]);
+    let asstMsg: ChatMessage;
+    if (regen) {
+      // 重新生成：替换最后一条回答（原用户消息保留）
+      asstMsg = { id: msgSeq++, role: "assistant", text: "", q, steps: [] };
+      setMessages((prev) => {
+        const out = [...prev];
+        for (let i = out.length - 1; i >= 0; i--) {
+          if (out[i].role === "assistant") {
+            out[i] = asstMsg;
+            break;
+          }
+        }
+        return out;
+      });
+    } else {
+      const userMsg: ChatMessage = { id: msgSeq++, role: "user", text: q, steps: [] };
+      asstMsg = { id: msgSeq++, role: "assistant", text: "", q, steps: [] };
+      setMessages((prev) => [...prev, userMsg, asstMsg]);
+    }
     scrollBottom();
 
     const controller = new AbortController();
@@ -164,7 +182,7 @@ export function ChatView({
     try {
       await apiStream(
         "/api/ask",
-        { question: q, thread_id: threadId },
+        { question: q, thread_id: threadId, regenerate: regen },
         (ev) => {
           switch (ev.type) {
             case "text":
@@ -405,26 +423,38 @@ export function ChatView({
                         <span className="text-[11px] text-muted-foreground">
                           {m.created_at ? fmtDate(m.created_at) : "刚刚"}
                         </span>
-                        {exportOn && (
-                          <span className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              className="p-1 text-muted-foreground hover:text-foreground"
-                              aria-label="复制 Markdown"
-                              onClick={() => void exportAnswer(m, "copy")}
-                            >
-                              <Copy className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              className="p-1 text-muted-foreground hover:text-foreground"
-                              aria-label="下载 Markdown"
-                              onClick={() => void exportAnswer(m, "download")}
-                            >
-                              <Download className="w-3.5 h-3.5" />
-                            </button>
-                          </span>
-                        )}
+                        <span className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            className="p-1 text-muted-foreground hover:text-foreground disabled:opacity-40"
+                            aria-label="重新生成回答"
+                            title="重新生成"
+                            disabled={busy}
+                            onClick={() => void send(m.q ?? "", { regenerate: true })}
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                          </button>
+                          {exportOn && (
+                            <>
+                              <button
+                                type="button"
+                                className="p-1 text-muted-foreground hover:text-foreground"
+                                aria-label="复制 Markdown"
+                                onClick={() => void exportAnswer(m, "copy")}
+                              >
+                                <Copy className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                className="p-1 text-muted-foreground hover:text-foreground"
+                                aria-label="下载 Markdown"
+                                onClick={() => void exportAnswer(m, "download")}
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                              </button>
+                            </>
+                          )}
+                        </span>
                       </div>
                       <div className="max-w-none text-sm leading-relaxed text-foreground">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>

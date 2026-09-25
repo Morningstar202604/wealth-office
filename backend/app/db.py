@@ -412,6 +412,19 @@ async def save_run(
     return {"ok": True, "id": cur.lastrowid}
 
 
+async def delete_last_run(thread_id: str) -> dict[str, Any]:
+    """删除指定会话的最后一条问答（用于'重新生成'：先移除旧回答，再以同一问题重新作答）。"""
+    conn = await _conn()
+    cur = await conn.execute(
+        "SELECT id FROM runs WHERE thread_id=? ORDER BY id DESC LIMIT 1", (thread_id,)
+    )
+    row = await cur.fetchone()
+    if row:
+        await conn.execute("DELETE FROM runs WHERE id=?", (row["id"],))
+        await conn.commit()
+    return {"ok": True}
+
+
 async def list_runs(thread_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
     if thread_id:
         rows = await fetch_all(

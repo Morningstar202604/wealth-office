@@ -130,6 +130,19 @@ async def test_history_archival(client) -> None:
     assert runs[0]["question"] == "我的组合怎么样？"
 
 
+async def test_ask_regenerate_replaces_last(client) -> None:
+    """重新生成：run 数量不变（替换而非追加），且最后一条是重新生成的结果。"""
+    tid = "regen-test"
+    async with client.stream("POST", "/api/ask", json={"question": "我的组合怎么样？", "thread_id": tid}) as resp:
+        await resp.aread()
+    async with client.stream("POST", "/api/ask", json={"question": "我的组合怎么样？", "thread_id": tid, "regenerate": True}) as resp:
+        await resp.aread()
+    runs = (await client.get(f"/api/history?thread_id={tid}")).json()["runs"]
+    assert len(runs) == 1, "重新生成后不应追加新记录"
+    assert runs[0]["question"] == "我的组合怎么样？"
+    assert "总市值" in runs[0]["answer"]
+
+
 async def test_manual_report(client) -> None:
     r = await client.post("/api/reports/generate")
     assert r.status_code == 200
