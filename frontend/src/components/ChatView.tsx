@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  ChevronDown, ChevronUp, Copy, Download, Loader2, MessageCircle, Mic, MicOff, Send, Square, Sparkles,
+  ChevronDown, ChevronUp, Copy, Download, Loader2, MessageCircle, Mic, MicOff, Search, Send, Square, Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -76,9 +76,14 @@ export function ChatView({
   const [showSteps, setShowSteps] = useState(false);
   const [listening, setListening] = useState(false);
   const [showSessions, setShowSessions] = useState(false);
+  const [sessionSearch, setSessionSearch] = useState("");
   const abortRef = useRef<AbortController | null>(null);
   const recogRef = useRef<{ stop: () => void } | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // 会话本地过滤（量小，无需后端）
+  const kw = sessionSearch.trim().toLowerCase();
+  const filteredSessions = kw ? sessions.filter((s) => s.title.toLowerCase().includes(kw)) : sessions;
 
   const settings = bootstrap?.settings ?? {};
   const voiceOn = settings.voice_input === "on";
@@ -309,11 +314,26 @@ export function ChatView({
                 onClick={() => setShowSessions(false)}
                 aria-hidden
               />
-              <div className="absolute left-0 top-full mt-1 z-30 w-64 max-h-72 overflow-y-auto scroll-thin rounded-xl border border-border bg-card shadow-lift p-1.5">
-                {sessions.length === 0 ? (
-                  <div className="px-3 py-3 text-xs text-muted-foreground">还没有会话</div>
+              <div className="absolute left-0 top-full mt-1 z-30 w-72 max-h-80 overflow-y-auto scroll-thin rounded-xl border border-border bg-card shadow-lift p-1.5">
+                {sessions.length > 3 && (
+                  <div className="relative px-1 pt-1 pb-1.5">
+                    <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+                    <input
+                      type="search"
+                      value={sessionSearch}
+                      onChange={(e) => setSessionSearch(e.target.value)}
+                      placeholder="搜索会话"
+                      aria-label="搜索会话"
+                      className="w-full rounded-lg border border-input bg-background pl-8 pr-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </div>
+                )}
+                {filteredSessions.length === 0 ? (
+                  <div className="px-3 py-3 text-xs text-muted-foreground">
+                    {sessionSearch.trim() ? "没有匹配的会话" : "还没有会话"}
+                  </div>
                 ) : (
-                  sessions.slice(0, 30).map((s) => (
+                  filteredSessions.slice(0, 30).map((s) => (
                     <button
                       key={s.id}
                       type="button"

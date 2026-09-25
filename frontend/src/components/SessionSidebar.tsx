@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import {
-  LayoutDashboard, MessageSquare, NotebookPen, Plus, Settings,
+  LayoutDashboard, MessageSquare, NotebookPen, Plus, Search, Settings,
   Trash2, Pencil, MessageCircle,
 } from "lucide-react";
 import { BrandLogo, BRAND } from "@/lib/brand";
@@ -41,6 +41,11 @@ export function SessionSidebar({
   const { sessions } = store.useApp();
   const [editing, setEditing] = useState<number | null>(null);
   const [editTitle, setEditTitle] = useState("");
+  const [q, setQ] = useState("");
+
+  // 本地过滤：会话量小，无需后端接口
+  const kw = q.trim().toLowerCase();
+  const filtered = kw ? sessions.filter((s) => s.title.toLowerCase().includes(kw)) : sessions;
 
   const go = (id: SidebarTab) => {
     onNavigate(id);
@@ -97,16 +102,36 @@ export function SessionSidebar({
             <Plus className="w-4 h-4" />
           </button>
         </div>
+        {/* 会话多了之后提供搜索（主流 agent 标配） */}
+        {sessions.length > 3 && (
+          <div className="px-2 mb-1">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              <input
+                type="search"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="搜索会话"
+                aria-label="搜索会话"
+                className="w-full rounded-lg border border-input bg-background pl-8 pr-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+          </div>
+        )}
         <div className="flex-1 overflow-y-auto scroll-thin px-2 space-y-0.5">
-          {sessions.length === 0 ? (
+          {filtered.length === 0 ? (
             <div className="px-3 py-6 text-center text-xs text-muted-foreground">
               <MessageCircle className="w-4 h-4 mx-auto mb-1.5 opacity-60" />
-              还没有会话
-              <br />
-              点右上角 + 开始
+              {q.trim() ? "没有匹配的会话" : "还没有会话"}
+              {!q.trim() && (
+                <>
+                  <br />
+                  点右上角 + 开始
+                </>
+              )}
             </div>
           ) : (
-            sessions.slice(0, 30).map((s: SessionItem) => (
+            filtered.slice(0, 30).map((s: SessionItem) => (
               <div
                 key={s.id}
                 className={cn(
